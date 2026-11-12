@@ -1,0 +1,15 @@
+model: GDN2ForCausalLM 399.5M params (18.92M ARMT), window 8192
+[eval step 0] val 2.4039 per segment 2.384 2.420 2.450 2.396 2.380 2.374 2.406 2.421 | val_long 2.5024 per segment 2.506 2.484 2.549 2.433 2.510 2.581 2.513 2.443
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 24.7k tok/s mem 17.1G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 26.2k tok/s mem 17.1G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 26.3k tok/s mem 17.1G
+step 40 loss 2.4215 seg0 2.482 seg7 2.396 lr 6.7e-05/2.0e-04 gnorm 0.30 26.3k tok/s mem 17.1G
+step 50 loss 2.4311 seg0 2.540 seg7 2.404 lr 8.3e-05/2.5e-04 gnorm 0.31 26.3k tok/s mem 17.1G
+[eval step 50] val 2.4007 per segment 2.382 2.414 2.446 2.392 2.379 2.370 2.404 2.418 | val_long 2.5001 per segment 2.503 2.481 2.547 2.431 2.508 2.579 2.509 2.442
+step 60 loss 2.4097 seg0 2.473 seg7 2.398 lr 1.0e-04/3.0e-04 gnorm 0.30 24.7k tok/s mem 17.1G
+step 70 loss 2.4175 seg0 2.498 seg7 2.397 lr 8.9e-05/2.7e-04 gnorm 0.30 26.3k tok/s mem 17.1G
+step 80 loss 2.4319 seg0 2.488 seg7 2.427 lr 5.9e-05/1.8e-04 gnorm 0.29 26.3k tok/s mem 17.1G
+step 90 loss 2.3994 seg0 2.439 seg7 2.402 lr 2.6e-05/7.7e-05 gnorm 0.28 26.4k tok/s mem 17.1G
+step 100 loss 2.4095 seg0 2.464 seg7 2.404 lr 1.0e-05/3.0e-05 gnorm 0.27 26.4k tok/s mem 17.1G
+[eval step 100] val 2.4012 per segment 2.383 2.416 2.449 2.392 2.379 2.369 2.404 2.418 | val_long 2.5001 per segment 2.505 2.482 2.547 2.431 2.507 2.578 2.510 2.440
+EXIT 0

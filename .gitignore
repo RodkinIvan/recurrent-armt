@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.state.json
+.router/
+CODE_VERSION.json
+wandb/
+wandb_token
+logs/
+# runs: keep only the metric logs (figures are made from them), not checkpoints
+outputs/*/*
+!outputs/*/log.jsonl
+outputs/smoke_*/
+.DS_Store

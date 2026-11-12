@@ -1,0 +1,74 @@
+data: separator 1, cooldown 4 windows, validation windows val 4, val_long 2
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 16972.66it/s]
+model: GDN2ForCausalLM 399.5M params (18.92M ARMT), window 8192
+backbone frozen until step 4 (checksum -83406.413071)
+wandb: [wandb.login()] Loaded credentials for https://api.forge.coreweave.com from WANDB_API_KEY.
+wandb: Currently logged in as: irodkin to https://api.forge.coreweave.com. Use `wandb login --relogin` to force relogin
+wandb: setting up run smoke_resume-adfa5878
+wandb: Tracking run with wandb version 0.31.0
+wandb: Run data is saved locally in /home/ivan.rodkin/router/recurrent_armt/wandb/run-20261112_130749-smoke_resume-adfa5878
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run smoke_resume
+wandb: ⭐️ View project at https://forge.coreweave.com/wandb/irodkin/recurrent-armt-smoke
+wandb: 🚀 View run at https://forge.coreweave.com/wandb/irodkin/recurrent-armt-smoke/runs/smoke_resume-adfa5878
+[memory step 0] read/hidden 0.00e+00 (max 0.00e+00), W_mv rms 0.00e+00
+[eval step 0] val 2.2916 per segment 2.481 2.564 2.391 2.114 2.106 2.057 2.222 2.399 | val_long 2.3951 per segment 2.537 2.461 2.319 2.282 2.303 2.695 2.465 2.099 | val_long_reset 2.5072 per segment 2.537 2.572 2.463 2.399 2.486 2.840 2.576 2.184
+step 1 loss 2.2579 seg0 2.270 seg7 1.818 lr 0.0e+00/5.0e-05 gnorm 0.89 1.2k tok/s mem 5.0G
+step 2 loss 2.4332 seg0 2.435 seg7 2.595 lr 0.0e+00/1.0e-04 gnorm 0.99 6.8k tok/s mem 5.1G
+step 3 loss 2.4484 seg0 2.145 seg7 2.776 lr 0.0e+00/1.0e-04 gnorm 1.21 7.8k tok/s mem 5.1G
+[memory step 3] read/hidden 1.52e-02 (max 2.79e-02), W_mv rms 1.40e-04
+[eval step 3] val 2.3066 per segment 2.481 2.583 2.412 2.132 2.120 2.075 2.232 2.419 | val_long 2.4087 per segment 2.537 2.472 2.339 2.302 2.311 2.709 2.485 2.115 | val_long_reset 2.5244 per segment 2.537 2.592 2.481 2.420 2.498 2.867 2.599 2.201
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.73s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.73s/it]
+saved /mnt/data/recurrent_armt_smoke/smoke_resume/last at step 3
+step 4 loss 2.5699 seg0 2.281 seg7 2.577 lr 0.0e+00/8.7e-05 gnorm 0.87 2.6k tok/s mem 5.1G
+step 4: unfreezing the backbone (checksum -83406.413071, unchanged: True)
+step 5 loss 2.5324 seg0 2.348 seg7 2.262 lr 2.8e-05/5.5e-05 gnorm 1.25 7.2k tok/s mem 6.0G
+step 6 loss 2.5676 seg0 3.259 seg7 2.275 lr 2.3e-05/2.3e-05 gnorm 1.26 7.3k tok/s mem 8.2G
+[memory step 6] read/hidden 1.10e-02 (max 3.77e-02), W_mv rms 1.86e-04
+[eval step 6] val 2.2960 per segment 2.480 2.567 2.395 2.119 2.113 2.062 2.224 2.408 | val_long 2.3969 per segment 2.536 2.460 2.319 2.285 2.305 2.696 2.472 2.102 | val_long_reset 2.5114 per segment 2.536 2.575 2.463 2.403 2.492 2.851 2.586 2.186
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.52s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.52s/it]
+saved /mnt/data/recurrent_armt_smoke/smoke_resume/last at step 6
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.52s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.52s/it]
+done
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33msmoke_resume[0m at: [34mhttps://forge.coreweave.com/wandb/irodkin/recurrent-armt-smoke/runs/smoke_resume-adfa5878[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20261112_130749-smoke_resume-adfa5878/logs[0m
+---- first run done; log steps: [0, 1, 2, 3, 3, 4, 5, 6, 6]
+final
+last
+log.jsonl
+data: separator 1, cooldown 4 windows, validation windows val 4, val_long 2
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14569.68it/s]
+model: GDN2ForCausalLM 399.5M params (18.92M ARMT), window 8192
+resumed from /mnt/data/recurrent_armt_smoke/smoke_resume/last at step 6
+wandb: [wandb.login()] Loaded credentials for https://api.forge.coreweave.com from WANDB_API_KEY.
+wandb: Currently logged in as: irodkin to https://api.forge.coreweave.com. Use `wandb login --relogin` to force relogin
+wandb: setting up run smoke_resume-resume6-fc3bfc32
+wandb: Tracking run with wandb version 0.31.0
+wandb: Run data is saved locally in /home/ivan.rodkin/router/recurrent_armt/wandb/run-20261112_130853-smoke_resume-resume6-fc3bfc32
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run smoke_resume-resume6
+wandb: ⭐️ View project at https://forge.coreweave.com/wandb/irodkin/recurrent-armt-smoke
+wandb: 🚀 View run at https://forge.coreweave.com/wandb/irodkin/recurrent-armt-smoke/runs/smoke_resume-resume6-fc3bfc32
+step 7 loss 2.3178 seg0 2.225 seg7 2.204 lr 5.5e-05/5.5e-05 gnorm 1.12 1.1k tok/s mem 8.2G
+step 8 loss 2.5330 seg0 2.651 seg7 2.261 lr 3.8e-05/3.8e-05 gnorm 1.13 6.6k tok/s mem 8.2G
+step 9 loss 2.6033 seg0 2.528 seg7 2.573 lr 2.3e-05/2.3e-05 gnorm 1.12 6.9k tok/s mem 8.2G
+[memory step 9] read/hidden 9.04e-03 (max 3.97e-02), W_mv rms 2.07e-04
+[eval step 9] val 2.2963 per segment 2.480 2.566 2.394 2.119 2.114 2.066 2.225 2.406 | val_long 2.4000 per segment 2.539 2.460 2.326 2.286 2.311 2.702 2.470 2.106 | val_long_reset 2.5122 per segment 2.539 2.574 2.469 2.401 2.495 2.848 2.584 2.188
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.46s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.46s/it]
+saved /mnt/data/recurrent_armt_smoke/smoke_resume/last at step 9
+step 10 loss 2.5617 seg0 2.532 seg7 2.914 lr 1.3e-05/1.3e-05 gnorm 1.17 1.6k tok/s mem 8.2G
+[memory step 10] read/hidden 8.94e-03 (max 3.98e-02), W_mv rms 2.08e-04
+[eval step 10] val 2.2962 per segment 2.480 2.566 2.394 2.119 2.113 2.066 2.225 2.406 | val_long 2.4005 per segment 2.538 2.461 2.327 2.287 2.311 2.702 2.471 2.106 | val_long_reset 2.5120 per segment 2.538 2.573 2.469 2.401 2.495 2.848 2.584 2.188
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.54s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.54s/it]
+saved /mnt/data/recurrent_armt_smoke/smoke_resume/last at step 10
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:04<00:00,  4.87s/it]Writing model shards: 100%|██████████| 1/1 [00:04<00:00,  4.87s/it]
+done
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33msmoke_resume-resume6[0m at: [34mhttps://forge.coreweave.com/wandb/irodkin/recurrent-armt-smoke/runs/smoke_resume-resume6-fc3bfc32[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20261112_130853-smoke_resume-resume6-fc3bfc32/logs[0m
+---- resumed run done; log steps: [0, 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 9, 9, 10, 10]
+final
+last
+log.jsonl
+EXIT 0

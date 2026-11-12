@@ -1,0 +1,49 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "smoke_rwkv7",
+   "cmd": "export NCCL_P2P_DISABLE=1; for n in 20 30; do {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29511 train.py --base_model fla-hub/rwkv7-0.4B-g1a --out_dir outputs/{name} --max_steps $n --batch_size 8 --grad_accum 1 --warmup_steps 5 --eval_every 10 --eval_windows 16 --eval_long_windows 8 --log_every 5 --save_every 10 || exit 1; done --wandb_project recurrent-armt",
+   "gpus": 2,
+   "gb": 40,
+   "expect": [
+    "outputs/smoke_rwkv7/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2",
+    "mbz_nlp2.10"
+   ]
+  },
+  {
+   "name": "smoke_mamba2",
+   "cmd": "export NCCL_P2P_DISABLE=1; for n in 20 30; do {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29512 train.py --base_model AntonV/mamba2-370m-hf --out_dir outputs/{name} --max_steps $n --batch_size 8 --grad_accum 1 --warmup_steps 5 --eval_every 10 --eval_windows 16 --eval_long_windows 8 --log_every 5 --save_every 10 || exit 1; done --wandb_project recurrent-armt",
+   "gpus": 2,
+   "gb": 40,
+   "expect": [
+    "outputs/smoke_mamba2/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2",
+    "mbz_nlp2.10"
+   ]
+  }
+ ]
+}

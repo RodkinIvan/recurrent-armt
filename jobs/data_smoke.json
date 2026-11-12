@@ -1,0 +1,32 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "results/{name}.json"
+ ],
+ "jobs": [
+  {
+   "name": "data_smoke",
+   "cmd": "mkdir -p results && PYTHONPATH=. {python} scripts/data_smoke.py --out results/{name}.json",
+   "gpus": 0,
+   "expect": [
+    "results/data_smoke.json"
+   ],
+   "hosts": [
+    "mbz_nlp2"
+   ]
+  }
+ ]
+}

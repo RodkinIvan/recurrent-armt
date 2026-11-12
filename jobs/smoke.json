@@ -1,0 +1,8 @@
+{"project": "recurrent_armt",
+ "env": {"file": "env.yml"},
+ "sync": ["recurrent_armt", "tests", "scripts"],
+ "exclude": ["__pycache__", "*.pyc"],
+ "fetch": [],
+ "jobs": [
+  {"name": "smoke_env", "cmd": "{python} scripts/smoke_env.py", "gpus": 1, "gb": 4}
+ ]}

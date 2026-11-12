@@ -1,0 +1,15 @@
+{
+ "gpu": "NVIDIA RTX 6000 Ada Generation",
+ "batch": 8,
+ "window": 8192,
+ "segment_size": 1024,
+ "num_mem_tokens": 32,
+ "precision": "bf16",
+ "original_mode": "horizontal",
+ "decode/carmt": {
+  "ms_per_token": 2.879744650272187
+ },
+ "decode/original": {
+  "ms_per_token": 16.2092488099006
+ }
+}

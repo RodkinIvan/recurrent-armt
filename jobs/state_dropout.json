@@ -1,0 +1,49 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "gdn2_370m_armt_freeze300_sd0.5",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29544 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --max_steps 600 --freeze_backbone_steps 300 --rnn_state_dropout 0.5 --rnn_state_dropout_steps 300 --eval_state_reset --batch_size 8 --grad_accum 2 --lr 1e-4 --memory_lr_mult 3 --warmup_steps 60 --eval_every 100 --save_every 100 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt",
+   "gpus": 2,
+   "gb": 40,
+   "expect": [
+    "outputs/gdn2_370m_armt_freeze300_sd0.5/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2.10"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "gdn2_370m_armt_freeze300_sd1.0",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29545 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --max_steps 600 --freeze_backbone_steps 300 --rnn_state_dropout 1.0 --rnn_state_dropout_steps 300 --eval_state_reset --batch_size 8 --grad_accum 2 --lr 1e-4 --memory_lr_mult 3 --warmup_steps 60 --eval_every 100 --save_every 100 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt",
+   "gpus": 2,
+   "gb": 40,
+   "expect": [
+    "outputs/gdn2_370m_armt_freeze300_sd1.0/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2.10"
+   ],
+   "retries": 2
+  }
+ ]
+}

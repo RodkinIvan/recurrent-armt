@@ -1,0 +1,9 @@
+{"gpu": "NVIDIA RTX 6000 Ada Generation", "batch": 8, "window": 8192, "segment_size": 1024, "num_mem_tokens": 32, "precision": "bf16", "original_mode": "vertical"}
+train/carmt                     3112.6 ms       21.1 k tok/s
+train/original_ckpt             4390.3 ms       14.9 k tok/s
+train/original_nockpt        OOM
+infer/carmt                      798.1 ms       82.1 k tok/s
+infer/original                   993.1 ms       66.0 k tok/s
+speedup train: 1.41x
+speedup infer: 1.24x
+BENCH_DONE

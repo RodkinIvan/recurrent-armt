@@ -1,0 +1,23 @@
+# python carmt/long_context.py carmt|original <lengths> [loss|last]   (RTX 6000 Ada, batch 1, bf16, no grad; final carmt build)
+# device memory = cudaMemGetInfo difference over the call (model weights excluded)
+
+# mode "last": output_logits="last", no labels: one call, last-position logits. The original after its fix (segments-first,
+# one segment embedded at a time, only the last segment's hidden states kept):
+original last T= 0.07M  device memory used   0.73 GB    16.7k tok/s
+original last T= 1.05M  device memory used   0.73 GB    20.8k tok/s
+original last T= 4.19M  device memory used   0.79 GB    20.8k tok/s
+original last T=10.49M  device memory used   0.87 GB    20.8k tok/s
+carmt    last T= 0.07M  device memory used   0.95 GB    67.2k tok/s
+carmt    last T= 1.05M  device memory used   0.95 GB    85.9k tok/s
+carmt    last T= 4.19M  device memory used   0.98 GB    82.9k tok/s
+carmt    last T=10.49M  device memory used   1.06 GB    82.6k tok/s
+
+# mode "loss": labels, loss over every token, one call. The original keeps all hidden states on this path:
+carmt    loss T= 0.07M  device memory used   1.19 GB    68.6k tok/s
+carmt    loss T= 1.05M  device memory used   1.21 GB    84.6k tok/s
+carmt    loss T= 4.19M  device memory used   1.28 GB    80.0k tok/s
+carmt    loss T=10.49M  device memory used   1.43 GB    77.2k tok/s
+original loss T= 0.07M  device memory used   2.88 GB    16.5k tok/s
+original loss T= 1.05M  device memory used  20.66 GB    20.3k tok/s
+original loss T= 4.19M  OOM
+original loss, fed in 64k pieces with state=: T=4.19M  3.40 GB  20.3k tok/s

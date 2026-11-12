@@ -1,0 +1,23 @@
+{
+ "chunk_build_s": 260.1,
+ "tokens_per_s": 64829,
+ "docs": 16384,
+ "tokens": 16860001,
+ "windows": 2058,
+ "dropped_windows": 2,
+ "docs_mean_tokens": 1029.0527954101562,
+ "docs_median_tokens": 626.0,
+ "frac_docs_ge_window": 0.00933837890625,
+ "frac_tokens_in_docs_ge_window": 0.12426470200090735,
+ "windows_sharing_a_doc_with_next": 2059,
+ "min_stream_gap_between_windows_of_one_doc": 64,
+ "val_windows": [
+  64,
+  8192
+ ],
+ "val_long_windows": [
+  32,
+  8192
+ ],
+ "val_build_s": 19.9
+}

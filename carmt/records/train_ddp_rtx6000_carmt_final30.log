@@ -1,0 +1,4 @@
+model: GDN2ForCausalLM 399.5M params (18.92M ARMT), window 8192
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 31.1k tok/s mem 20.0G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 32.9k tok/s mem 20.0G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 33.1k tok/s mem 20.0G
