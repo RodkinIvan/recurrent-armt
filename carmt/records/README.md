@@ -28,6 +28,7 @@ report, before those changes.
 | `qwen35_check_rtx5880.log` | `carmt/qwen35_check.py`: Qwen3.5-0.8B-Base + ARMT vs HF, the original (fla) and the exact recurrence; bf16 gradients | current |
 | `dist_check_qwen35_2x_rtx5880.log` | `torchrun --nproc_per_node 2 carmt/tests/dist_check.py --model qwen35`: DDP / ZeRO-1 / ZeRO-2, tiny hybrid fp32 and Qwen3.5-0.8B bf16 | current |
 | `bench_rtx5880_qwen35_bf16.json` | `carmt/bench.py --base Qwen/Qwen3.5-0.8B-Base --batch 4`: training (carmt with and without attention checkpointing), inference, generation, carmt and the original in one run | current |
+| `train_1x_rtx5880_qwen35_{carmt,original}.log` | 20-step 1-GPU `train.py` runs on Qwen3.5-0.8B-Base, `carmt/train_carmt.py` vs `train.py`, same arguments: 8.8k vs 6.6k tok/s, same losses | current |
 | `phases_rtx5880_qwen35_train.log` | one training step by phase (C recurrent fwd / bwd, loss head, PyTorch attention), synchronized at each boundary | current |
 | `bench_rtx6000_bf16_splitstate.json` | the optional `-DARMT_SPLIT_STATE` build (hi/lo bf16 state): ~10% slower, which is why it is off | previous, split |
 | `bench_rtx6000_decode_after_fix.json` | `bench.py --what decode`, after the original's fix | previous |

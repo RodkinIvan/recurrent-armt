@@ -165,6 +165,11 @@ flash attention, as in `train.py`; `records/bench_rtx5880_qwen35_bf16.json`):
 | training step, `CARMT_ATTN_CKPT=0` (the original does not fit without checkpointing) | 5.14 s, 23.2 GB | 3.18 s, 35.4 GB | 1.61× |
 | inference with loss | 1.26 s | 0.95 s | 1.33× |
 | generation (batch 1, 1k-token prompt + 64 tokens) | 22.6 ms/token | 6.65 ms/token | 3.40× |
+| `train.py` job, 1 GPU (batch 4 × grad_accum 2, 20 steps, steady state; `carmt/train_carmt.py` vs `train.py`) | 6.6k tok/s, 28.9 GB | 8.8k tok/s, 27.4 GB | 1.33× |
+
+In that job the losses agree (eval 2.5977 vs 2.5979 at step 0, 2.6033 vs 2.6040 after 20 optimizer steps; records
+`records/train_1x_rtx5880_qwen35_{original,carmt}.log`). The job gains less than the step because the optimizer and the
+data loading take the same time in both.
 
 Where a training step goes (`records/phases_rtx5880_qwen35_train.log`): the C backward of the recurrent layers ~43%, the
 248k-vocabulary loss head ~20% (about 50 TFLOP of GEMMs per step, the same in both implementations), the C forward of the
