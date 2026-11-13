@@ -11,3 +11,7 @@ outputs/*/*
 !outputs/*/log.jsonl
 outputs/smoke_*/
 .DS_Store
+
+# local working documents, not versioned
+reports/
+REVIEW.md
