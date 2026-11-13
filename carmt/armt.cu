@@ -26,12 +26,19 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <ctype.h>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
+#include <cublasLt.h>
 #include <vector>
 #include <string>
 #include <stdexcept>
+#include <map>
+#include <mutex>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 #ifdef ARMT_FP32
 typedef float floatX;
@@ -223,13 +230,15 @@ enum {
     B_HF, B_RSTDF, B_LOGITS, B_TGT, B_DHF,
     // inference ping-pong / training stores
     B_X0, B_X1, B_XS, B_DXS, B_ST_S, B_ST_CS, B_ST_W, B_ST_Z, B_DST_S, B_DST_CS, B_DST_W, B_DST_Z, B_ZERO,
-    B_PACK, B_PACKTAB, B_WCAT, B_AMX, B_PREDVN, B_IST_S, B_IST_CS, B_IST_W, B_IST_Z, B_XOT, B_S0LO, B_O32,
+    B_PACK, B_PACKTAB, B_WCAT, B_AMX, B_PREDVN, B_IST_S, B_IST_CS, B_IST_W, B_IST_Z, B_XOT, B_S0LO, B_O32, B_LTWS, B_TUNE,
     B_COUNT
 };
 
 typedef struct {
     Dims d;
     cublasHandle_t blas;
+    cublasLtHandle_t lt;
+    int notune;               // > 0: mm uses cublasGemmEx (GEMMs that read the parameters directly, see lin32)
     cudaStream_t stream;
     int sms;
     Buf buf[B_COUNT];
@@ -267,6 +276,173 @@ static float* GPG(Ctx* c, int i0, int i1) {
 
 // =============================================================================================== GEMM (row-major)
 // C[M,N] (ldc) = alpha * op(A)[M,K] * op(B)[K,N] + beta * C ; op(X) = X^T if tX. Strided batched if batch > 1.
+// cuBLAS's default heuristic picks slow kernels for several of these shapes. The first time a shape (with its operand
+// alignment) is seen, mm times cuBLASLt's top candidates and the default cublasGemmEx on a scratch output and keeps the
+// fastest. The choice must not depend on timing noise (bf16 results differ slightly between algorithms, and DDP ranks /
+// repeated runs should compute the same thing), so it is made once per GPU model and cuBLAS version and persisted:
+// ARMT_GEMM_CACHE=<path prefix> (the Python side sets it next to the library) stores every choice in
+// <prefix>_<gpu>_<cublasLt version>.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
+// read the first process's choice instead of tuning again. Plans are shared by every context of the process.
+// ARMT_GEMM_TUNE=0: always cublasGemmEx. ARMT_GEMM_LOG=1: print each tuned shape's default and chosen time.
+#define LT_WS (32u << 20)
+#define LT_CAND 10
+struct GemmPlan {
+    int lt;                                   // 0: cublasGemmEx (default algorithm); 1: cublasLtMatmul with algo
+    cublasLtMatmulDesc_t op = NULL;
+    cublasLtMatrixLayout_t la = NULL, lb = NULL, lc = NULL;
+    cublasLtMatmulAlgo_t algo;
+    size_t ws = 0;
+};
+struct GemmChoice { int lt; cublasLtMatmulAlgo_t algo; size_t ws; };
+static std::map<std::string, GemmPlan*> g_plans;        // process-wide
+static std::map<std::string, GemmChoice> g_disk;        // the cache file's entries
+static std::mutex g_plans_mu;
+static int g_tune = -1, g_tune_log = 0;
+static std::string g_cache_file;
+static int env_int(const char* name, int def) { const char* v = getenv(name); return v && *v ? atoi(v) : def; }
+static int ptr_align(const void* p) { uintptr_t a = (uintptr_t)p; int al = 16; while (al > 1 && (a % al)) al >>= 1; return al; }
+
+static void gemm_tune_init() {
+    if (g_tune >= 0) return;
+    g_tune = env_int("ARMT_GEMM_TUNE", 1);
+    g_tune_log = env_int("ARMT_GEMM_LOG", 0);
+    const char* pre = getenv("ARMT_GEMM_CACHE");
+    if (g_tune && pre && *pre) {
+        int dev = 0; cudaDeviceProp pr;
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&pr, dev) == cudaSuccess) {
+            std::string name = pr.name;
+            for (char& ch : name) if (!isalnum((unsigned char)ch)) ch = '_';
+            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + ".txt";
+        }
+    }
+}
+// cache file: one line per shape: "<key> <lt> <ws> <algo as 16 hex digits x 8>"
+static void disk_read(int fd) {
+    std::string txt;
+    char buf[1 << 16];
+    lseek(fd, 0, SEEK_SET);
+    for (ssize_t n; (n = read(fd, buf, sizeof(buf))) > 0;) txt.append(buf, (size_t)n);
+    size_t pos = 0;
+    while (pos < txt.size()) {
+        size_t e = txt.find('\n', pos);
+        if (e == std::string::npos) break;                       // a partial last line: ignored
+        std::string line = txt.substr(pos, e - pos);
+        pos = e + 1;
+        size_t bar = line.find('|');
+        if (bar == std::string::npos) continue;
+        GemmChoice ch;
+        unsigned long long w[8], ws;
+        if (sscanf(line.c_str() + bar + 1, "%d %llu %llx %llx %llx %llx %llx %llx %llx %llx", &ch.lt, &ws, &w[0], &w[1], &w[2], &w[3],
+                   &w[4], &w[5], &w[6], &w[7]) != 10) continue;
+        static_assert(sizeof(cublasLtMatmulAlgo_t) == 64, "cublasLtMatmulAlgo_t layout");
+        memcpy(&ch.algo, w, 64);
+        ch.ws = (size_t)ws;
+        g_disk.emplace(line.substr(0, bar), ch);                 // the first entry of a key wins
+    }
+}
+static void disk_append(int fd, const std::string& key, const GemmChoice& ch) {
+    unsigned long long w[8];
+    memcpy(w, &ch.algo, 64);
+    char tail[256];
+    snprintf(tail, sizeof(tail), "|%d %llu %llx %llx %llx %llx %llx %llx %llx %llx\n", ch.lt, (unsigned long long)ch.ws, w[0], w[1], w[2], w[3],
+             w[4], w[5], w[6], w[7]);
+    std::string line = key + tail;
+    lseek(fd, 0, SEEK_END);
+    if (write(fd, line.data(), line.size()) != (ssize_t)line.size()) { /* best effort: the choice still holds in-process */ }
+}
+
+// descriptors of one shape (column-major view: C^T[N,M] = op(B)^T op(A)^T)
+static GemmPlan* plan_desc(cublasOperation_t oa, cublasOperation_t ob, int M, int N, int K, cudaDataType ta, int lda, long long sA,
+                           cudaDataType tb, int ldb, long long sB, cudaDataType tc, int ldc, long long sC, int batch, cublasComputeType_t ct) {
+    GemmPlan* p = new GemmPlan();
+    p->lt = 0;
+    CB(cublasLtMatmulDescCreate(&p->op, ct, CUDA_R_32F));
+    CB(cublasLtMatmulDescSetAttribute(p->op, CUBLASLT_MATMUL_DESC_TRANSA, &oa, sizeof(oa)));
+    CB(cublasLtMatmulDescSetAttribute(p->op, CUBLASLT_MATMUL_DESC_TRANSB, &ob, sizeof(ob)));
+    CB(cublasLtMatrixLayoutCreate(&p->la, tb, oa == CUBLAS_OP_N ? N : K, oa == CUBLAS_OP_N ? K : N, ldb));
+    CB(cublasLtMatrixLayoutCreate(&p->lb, ta, ob == CUBLAS_OP_N ? K : M, ob == CUBLAS_OP_N ? M : K, lda));
+    CB(cublasLtMatrixLayoutCreate(&p->lc, tc, N, M, ldc));
+    if (batch > 1) {
+        cublasLtMatrixLayout_t ls[3] = {p->la, p->lb, p->lc};
+        long long st[3] = {sB, sA, sC};
+        for (int i = 0; i < 3; i++) {
+            CB(cublasLtMatrixLayoutSetAttribute(ls[i], CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch, sizeof(batch)));
+            CB(cublasLtMatrixLayoutSetAttribute(ls[i], CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &st[i], sizeof(st[i])));
+        }
+    }
+    return p;
+}
+
+// time cuBLASLt's candidates against cublasGemmEx for plan p's shape
+static GemmChoice tune_gemm(Ctx* c, GemmPlan* p, cublasOperation_t oa, cublasOperation_t ob, int M, int N, int K, float alpha,
+                            const void* A, cudaDataType ta, int lda, long long sA, const void* B, cudaDataType tb, int ldb,
+                            long long sB, float beta, cudaDataType tc, int ldc, long long sC, int batch,
+                            cublasComputeType_t ct, int al) {
+    GemmChoice ch;
+    ch.lt = 0; ch.ws = 0;
+    memset(&ch.algo, 0, sizeof(ch.algo));
+    cublasLtMatmulPreference_t pref;
+    CB(cublasLtMatmulPreferenceCreate(&pref));
+    uint64_t wsmax = LT_WS;
+    uint32_t a32 = (uint32_t)al;
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsmax, sizeof(wsmax)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES, &a32, sizeof(a32)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES, &a32, sizeof(a32)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES, &a32, sizeof(a32)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES, &a32, sizeof(a32)));
+    cublasLtMatmulHeuristicResult_t res[LT_CAND];
+    int n = 0;
+    cublasStatus_t hs = cublasLtMatmulAlgoGetHeuristic(c->lt, p->op, p->la, p->lb, p->lc, p->lc, pref, LT_CAND, res, &n);
+    cublasLtMatmulPreferenceDestroy(pref);
+    if (hs != CUBLAS_STATUS_SUCCESS || n == 0) return ch;
+
+    size_t es = tc == CUDA_R_32F ? 4 : 2;
+    size_t extent = ((size_t)(batch - 1) * sC + (size_t)(M - 1) * ldc + N) * es;
+    void* Cs = ensure(&c->buf[B_TUNE], extent);       // the timing runs write here, never into C
+    CK(cudaMemsetAsync(Cs, 0, extent, c->stream));
+    void* ws = ensure(&c->buf[B_LTWS], LT_WS);
+    cudaEvent_t e0, e1;
+    CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
+    auto run = [&](int i) -> bool {
+        if (i < 0) {
+            if (batch == 1)
+                return cublasGemmEx(c->blas, oa, ob, N, M, K, &alpha, B, tb, ldb, A, ta, lda, &beta, Cs, tc, ldc, ct,
+                                    CUBLAS_GEMM_DEFAULT) == CUBLAS_STATUS_SUCCESS;
+            return cublasGemmStridedBatchedEx(c->blas, oa, ob, N, M, K, &alpha, B, tb, ldb, sB, A, ta, lda, sA, &beta, Cs, tc,
+                                              ldc, sC, batch, ct, CUBLAS_GEMM_DEFAULT) == CUBLAS_STATUS_SUCCESS;
+        }
+        return cublasLtMatmul(c->lt, p->op, &alpha, B, p->la, A, p->lb, &beta, Cs, p->lc, Cs, p->lc, &res[i].algo, ws,
+                              res[i].workspaceSize, c->stream) == CUBLAS_STATUS_SUCCESS;
+    };
+    auto timed = [&](int i) -> float {
+        if (!run(i)) return 1e30f;                     // warm-up; a candidate that fails to launch is skipped
+        CK(cudaEventRecord(e0, c->stream));
+        const int reps = 3;
+        for (int r = 0; r < reps; r++) run(i);
+        CK(cudaEventRecord(e1, c->stream));
+        CK(cudaEventSynchronize(e1));
+        float ms = 0.f;
+        CK(cudaEventElapsedTime(&ms, e0, e1));
+        return ms / reps;
+    };
+    float t_def = timed(-1), t_best = t_def;
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+        if (res[i].state != CUBLAS_STATUS_SUCCESS || res[i].workspaceSize > LT_WS) continue;
+        float t = timed(i);
+        if (t < t_best * 0.97f) { t_best = t; best = i; }   // keep the default unless a candidate is clearly faster
+    }
+    cudaGetLastError();
+    CK(cudaEventDestroy(e0)); CK(cudaEventDestroy(e1));
+    buf_free(&c->buf[B_TUNE]);
+    if (best >= 0) { ch.lt = 1; ch.algo = res[best].algo; ch.ws = res[best].workspaceSize; }
+    if (g_tune_log)
+        fprintf(stderr, "armt gemm %c%c M=%d N=%d K=%d batch=%d in=%d/%d out=%d beta=%g: default %.4f ms, chosen %.4f ms (%s)\n",
+                oa == CUBLAS_OP_T ? 'T' : 'N', ob == CUBLAS_OP_T ? 'T' : 'N', M, N, K, batch, (int)ta, (int)tb, (int)tc,
+                beta, t_def, t_best, best < 0 ? "default" : "lt");
+    return ch;
+}
+
 static void mm(Ctx* c, int tA, int tB, int M, int N, int K, float alpha,
                const void* A, cudaDataType ta, int lda, long long sA,
                const void* B, cudaDataType tb, int ldb, long long sB, float beta,
@@ -276,6 +452,55 @@ static void mm(Ctx* c, int tA, int tB, int M, int N, int K, float alpha,
     cublasComputeType_t ct = CUBLAS_COMPUTE_32F;
     if (ta == CUDA_R_32F && tb == CUDA_R_32F && c->d.c.allow_tf32) ct = CUBLAS_COMPUTE_32F_FAST_TF32;
     cublasOperation_t oa = tB ? CUBLAS_OP_T : CUBLAS_OP_N, ob = tA ? CUBLAS_OP_T : CUBLAS_OP_N;
+    // broadcast operands (stride 0) stay on cublasGemmEx
+    if (g_tune && !c->notune && (batch == 1 || (sA && sB && sC))) {
+        int al = ptr_align(A);
+        if (ptr_align(B) < al) al = ptr_align(B);
+        if (ptr_align(C) < al) al = ptr_align(C);
+        char kb[256];
+        snprintf(kb, sizeof(kb), "%d%d %d %d %d %d %d %d %lld %lld %lld %d %d %d %d %d %d %d", tA, tB, M, N, K, lda, ldb, ldc, sA, sB, sC,
+                 batch, (int)ta, (int)tb, (int)tc, (int)ct, al, beta != 0.f);
+        std::string key(kb);
+        GemmPlan* pl;
+        {
+            std::lock_guard<std::mutex> lk(g_plans_mu);
+            auto it = g_plans.find(key);
+            if (it != g_plans.end()) pl = it->second;
+            else {
+                pl = plan_desc(oa, ob, M, N, K, ta, lda, sA, tb, ldb, sB, tc, ldc, sC, batch, ct);
+                // The file lock is only ever held for a read or an append, never across GPU work: the timing synchronizes
+                // the training stream, which (with per-layer backward nodes) may wait on a collective that another rank
+                // only launches once it gets past this lock.
+                int fd = g_cache_file.empty() ? -1 : open(g_cache_file.c_str(), O_RDWR | O_CREAT, 0644);
+                if (fd >= 0) { flock(fd, LOCK_EX); disk_read(fd); flock(fd, LOCK_UN); }   // tuned by another process?
+                auto d = g_disk.find(key);
+                GemmChoice ch;
+                if (d != g_disk.end()) ch = d->second;
+                else {
+                    GemmChoice mine = tune_gemm(c, pl, oa, ob, M, N, K, alpha, A, ta, lda, sA, B, tb, ldb, sB, beta, tc, ldc,
+                                                sC, batch, ct, al);
+                    if (fd >= 0) { flock(fd, LOCK_EX); disk_read(fd); }
+                    d = g_disk.find(key);
+                    if (d != g_disk.end()) ch = d->second;   // another process tuned it meanwhile: its (first) entry wins
+                    else {
+                        ch = mine;
+                        g_disk.emplace(key, ch);
+                        if (fd >= 0) disk_append(fd, key, ch);
+                    }
+                    if (fd >= 0) flock(fd, LOCK_UN);
+                }
+                if (fd >= 0) close(fd);
+                pl->lt = ch.lt; pl->algo = ch.algo; pl->ws = ch.ws;
+                g_plans[key] = pl;
+            }
+        }
+        if (pl->lt) {
+            void* ws = ensure(&c->buf[B_LTWS], LT_WS);
+            CB(cublasLtMatmul(c->lt, pl->op, &alpha, B, pl->la, A, pl->lb, &beta, C, pl->lc, C, pl->lc, &pl->algo, ws, pl->ws,
+                              c->stream));
+            return;
+        }
+    }
     if (batch == 1)
         CB(cublasGemmEx(c->blas, oa, ob, N, M, K, &alpha, B, tb, ldb, A, ta, lda, &beta, C, tc, ldc, ct, CUBLAS_GEMM_DEFAULT));
     else
@@ -296,16 +521,24 @@ static void lin_dw(Ctx* c, float* dW, const floatX* dy, int lddy, const floatX* 
     if (!dW) return;
     mm(c, 1, 0, O, I, N, 1.f, dy, CUDA_X, lddy, 0, x, CUDA_X, ldx, 0, 1.f, dW, F32, I, 0, 1);
 }
-// fp32 versions (memory projections)
+// fp32 versions (memory projections). They read / write the framework's parameter and gradient tensors directly, whose
+// alignment depends on the framework (DeepSpeed's flat buffers: 4 bytes); a tuned choice would then differ between, e.g.,
+// DDP and ZeRO runs of the same model, so these small GEMMs always use cublasGemmEx.
 static void lin32(Ctx* c, float* y, int ldy, const float* x, int ldx, const float* W, int N, int O, int I, float beta) {
+    c->notune++;
     mm(c, 0, 1, N, O, I, 1.f, x, F32, ldx, 0, W, F32, I, 0, beta, y, F32, ldy, 0, 1);
+    c->notune--;
 }
 static void lin32_dx(Ctx* c, float* dx, int lddx, const float* dy, int lddy, const float* W, int N, int O, int I, float beta) {
+    c->notune++;
     mm(c, 0, 0, N, I, O, 1.f, dy, F32, lddy, 0, W, F32, I, 0, beta, dx, F32, lddx, 0, 1);
+    c->notune--;
 }
 static void lin32_dw(Ctx* c, float* dW, const float* dy, int lddy, const float* x, int ldx, int N, int O, int I) {
     if (!dW) return;
+    c->notune++;
     mm(c, 1, 0, O, I, N, 1.f, dy, F32, lddy, 0, x, F32, ldx, 0, 1.f, dW, F32, I, 0, 1);
+    c->notune--;
 }
 
 // =============================================================================================== small kernels
@@ -569,6 +802,12 @@ __global__ void k_gather_mem(float* xm, const float* x, int Tr, int Tm, int D) {
     int r = blockIdx.x, b = r / Tm, m = r % Tm;
     const float* s = x + ((long)b * (Tr + Tm) + Tr + m) * D;
     for (int d = threadIdx.x; d < D; d += blockDim.x) xm[(long)r * D + d] = s[d];
+}
+// memory rows of the residual output: xm[r] = a[mem row r] + b[r]  (b compact [B*Tm, D])
+__global__ void k_resid_mem(float* xm, const float* a, const floatX* b, int Tr, int Tm, int D) {
+    int r = blockIdx.x, bi = r / Tm, m = r % Tm;
+    const float* s = a + ((long)bi * (Tr + Tm) + Tr + m) * D;
+    for (int d = threadIdx.x; d < D; d += blockDim.x) xm[(long)r * D + d] = s[d] + toF(b[(long)r * D + d]);
 }
 __global__ void k_scatter_add_mem(float* x, const float* xm, int Tr, int Tm, int D) {
     int r = blockIdx.x, b = r / Tm, m = r % Tm;
@@ -1846,8 +2085,11 @@ static void scan_bwd(Ctx* c, const Step& s, const float* dS_out, float* dS_in, i
 // =============================================================================================== host: one layer
 // forward of layer li over one segment piece. x: [B, T1, D] input (fp32), xo: output. st_in: state before the piece;
 // st_out: carried state (may be NULL to discard; may alias st_in for S, Wm, z). write: memory tokens present.
+// recomp: the backward's recompute: only what layer_bwd reads is produced (xo is not written; the MLP output is computed
+// on the memory-token rows only, for the memory write's scratch; the new memory itself is not formed).
 template <int KD>
-static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, const LState* st_in, const LState* st_out) {
+static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, const LState* st_in, const LState* st_out,
+                      bool recomp = false) {
     Dims& d = c->d;
     int D = d.D, N = s.N, NP = d.NP, KDt = d.KDt, VDt = d.VDt, Hv = d.Hv, F = d.F;
     float eps = d.c.norm_eps;
@@ -1909,16 +2151,24 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
     floatX *a = BF(c, B_A, floatX, (long)N * 2 * F), *m = BF(c, B_MM, floatX, (long)N * F), *mo = BF(c, B_MO, floatX, (long)N * D);
     lin(c, a, 2 * F, h2, D, c->w_12[li], N, 2 * F, D, 0.f);
     LAUNCH1D(k_swiglu, (long)N * F, m, a, (long)N, F);
-    lin(c, mo, D, m, F, c->w_3[li], N, D, F, 0.f);
-    LAUNCH1D(k_resid, (long)N * D, xo, xmid, mo, (long)N * D);
+    bool write = mem && s.Tm > 0 && st_out && st_out->Wm;
+    if (!recomp) {
+        lin(c, mo, D, m, F, c->w_3[li], N, D, F, 0.f);
+        LAUNCH1D(k_resid, (long)N * D, xo, xmid, mo, (long)N * D);
+    }
     // 7. memory write from the memory tokens' outputs
-    if (mem && s.Tm > 0 && st_out && st_out->Wm) {
+    if (write) {
         int BM = s.BM, dkh = d.dk / d.Hm, dvh = D / d.Hm;
         float *xm = BF(c, B_XM, float, (long)BM * D), *mk = BF(c, B_MK, float, (long)BM * d.dm), *phik = BF(c, B_PHIK, float, (long)BM * d.dk);
         float *denk = BF(c, B_DENK, float, (long)BM * d.Hm), *nrmk = BF(c, B_NRMK, float, (long)BM * d.Hm), *nmv = BF(c, B_NMV, float, (long)BM * D);
         float *mbp = BF(c, B_MBP, float, (long)BM * d.nmb), *prevn = BF(c, B_PREVN, float, (long)BM * D), *E = BF(c, B_E, float, (long)BM * D);
         float* coef = BF(c, B_COEF, float, (long)BM * d.Hm);
-        k_gather_mem<<<BM, 256, 0, c->stream>>>(xm, xo, s.Tr, s.Tm, D);
+        if (!recomp) k_gather_mem<<<BM, 256, 0, c->stream>>>(xm, xo, s.Tr, s.Tm, D);
+        else {   // w3 on the memory rows only (per sample: rows [Tr, T1)), into a compact [BM, D] block
+            mm(c, 0, 1, s.Tm, D, F, 1.f, m + (long)s.Tr * F, CUDA_X, F, (long long)s.T1 * F, c->w_3[li], CUDA_X, F, 0, 0.f,
+               mo, CUDA_X, D, (long long)s.Tm * D, s.B);
+            k_resid_mem<<<BM, 256, 0, c->stream>>>(xm, xmid, mo, s.Tr, s.Tm, D);
+        }
         lin32(c, mk, d.dm, xm, D, PP(c, PI(li, L_MK)), BM, d.dm, D, 0.f);
         lin32(c, nmv, D, xm, D, PP(c, PI(li, L_MV)), BM, D, D, 0.f);
         lin32(c, mbp, d.nmb, xm, D, PP(c, PI(li, L_MB)), BM, d.nmb, D, 0.f);
@@ -1927,6 +2177,10 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
             mm(c, 0, 0, s.Tm, dvh, dkh, 1.f, phik + h * dkh, F32, d.dk, (long long)s.Tm * d.dk, st_in->Wm + (long)h * dkh * dvh, F32, dvh,
                (long long)d.dk * D / d.Hm, 0.f, prevn + h * dvh, F32, D, (long long)s.Tm * D, s.B);
         k_write_E<<<BM, 256, 0, c->stream>>>(E, nmv, prevn, denk, mbp, PP(c, PI(li, L_MBB)), D, d.Hm, d.nmb);
+        if (recomp) {   // layer_bwd needs coef (k_write_z) but not the new W
+            k_write_z<<<s.B * d.Hm, 256, 0, c->stream>>>(st_in->z, st_out->z, phik, denk, nrmk, coef, s.Tm, dkh, d.Hm);
+            return;
+        }
         if (st_out->Wm != st_in->Wm) CK(cudaMemcpyAsync(st_out->Wm, st_in->Wm, (size_t)s.B * d.dk * D / d.Hm * 4, cudaMemcpyDeviceToDevice, c->stream));
         for (int h = 0; h < d.Hm; h++)   // W += phik^T E
             mm(c, 1, 0, dkh, dvh, s.Tm, 1.f, phik + h * dkh, F32, d.dk, (long long)s.Tm * d.dk, E + h * dvh, F32, D, (long long)s.Tm * D, 1.f,
@@ -2193,6 +2447,8 @@ API void* armt_create(const ArmtConfig* cfg) {
     Ctx* c = (Ctx*)calloc(1, sizeof(Ctx));
     make_dims(&c->d, cfg);
     CB(cublasCreate(&c->blas));
+    CB(cublasLtCreate(&c->lt));
+    gemm_tune_init();
     int dev; CK(cudaGetDevice(&dev));
     CK(cudaDeviceGetAttribute(&c->sms, cudaDevAttrMultiProcessorCount, dev));
     CK(cudaMallocHost((void**)&c->htab, 32 * MAXL * 24));
@@ -2223,6 +2479,7 @@ API void armt_destroy(void* p) {
     if (!c) return;
     try { for (int i = 0; i < B_COUNT; i++) buf_free(&c->buf[i]); } catch (...) {}
     cublasDestroy(c->blas);
+    cublasLtDestroy(c->lt);
     cudaFreeHost(c->htab);
     cudaEventDestroy(c->pack_done);
     free(c->tr_Tr); free(c->tr_Tm); free(c->tr_start); free(c->gmask);
@@ -2345,8 +2602,11 @@ static void forward_impl(Ctx* c, const ArmtForwardArgs* a) {
     }
 }
 
+// backward of layers [lo, hi) (top-down, each layer's segments right to left), then, if lo == 0, of the embeddings.
+// Called for hi = L first and then for consecutive lower ranges; every layer's gradients are final (and scaled by
+// *gscale) when its range returns, so the caller can start reducing them while the lower layers run.
 template <int KD>
-static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale) {
+static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale, int lo, int hi) {
     Dims& d = c->d;
     if (!c->tr_grad || !c->buf[B_XS].p) armt_fail("backward without a recorded training forward");
     c->grad = c->tr_grad;
@@ -2356,7 +2616,7 @@ static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale) {
     float *XS = (float*)c->buf[B_XS].p, *DXS = (float*)c->buf[B_DXS].p;
     float *SS = (float*)c->buf[B_ST_S].p, *SCS = (float*)c->buf[B_ST_CS].p, *SW = (float*)c->buf[B_ST_W].p, *SZ = (float*)c->buf[B_ST_Z].p;
     float *dS = BF(c, B_DST_S, float, nS), *dCs = BF(c, B_DST_CS, float, nCs), *dW = BF(c, B_DST_W, float, nW), *dZ = BF(c, B_DST_Z, float, nZ);
-    for (int i = d.L - 1; i >= 0; i--) {
+    for (int i = hi - 1; i >= lo; i--) {
         zero(c, dS, nS * 4); zero(c, dCs, nCs * 4); zero(c, dW, nW * 4); zero(c, dZ, nZ * 4);
         for (int k = np - 1; k >= 0; k--) {
             Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
@@ -2365,7 +2625,7 @@ static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale) {
             LState in = {SS + nS * si, SCS + nCs * si, d.has_mem[i] ? SW + nW * si : NULL, d.has_mem[i] ? SZ + nZ * si : NULL};
             float* xo_tmp = BF(c, B_XOT, float, xs_per);
             LState disc = {NULL, NULL, d.has_mem[i] ? BF(c, B_WDISC, float, nW) : NULL, d.has_mem[i] ? BF(c, B_ZDISC, float, nZ) : NULL};
-            layer_fwd<KD>(c, i, s, x0 + xs_per * i, xo_tmp, &in, &disc);
+            layer_fwd<KD>(c, i, s, x0 + xs_per * i, xo_tmp, &in, &disc, true);
             float* dx = DXS + xs_per * k;
             LState dst = {dS, dCs, d.has_mem[i] ? dW : NULL, d.has_mem[i] ? dZ : NULL};
             layer_bwd<KD>(c, i, s, x0 + xs_per * i, x0 + xs_per * (i + 1), &in, dx, &dst);
@@ -2375,11 +2635,14 @@ static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale) {
             }
         }
     }
+    long g0 = d.offset[PI(lo, 0)], g1 = hi == d.L ? d.total : d.offset[PI(hi, 0)];
+    if (gscale && g1 > g0) LAUNCH1D(k_scale, g1 - g0, c->grad + g0, g1 - g0, gscale);
+    if (lo > 0) return;
     for (int k = 0; k < np; k++) {
         Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
         k_embed_bwd<<<s.N, 256, 0, c->stream>>>(DXS + xs_per * k, ids, T, c->tr_start[k], GP(c, P_EMB), GP(c, P_MEMTOK), s.Tr, s.Tm, D);
     }
-    if (gscale) LAUNCH1D(k_scale, d.total, c->grad, d.total, gscale);
+    if (gscale && g0 > 0) LAUNCH1D(k_scale, g0, c->grad, g0, gscale);   // the global parameters (embeddings, head, final norm)
 }
 
 // forward. params: n_params device pointers in canonical order.
@@ -2394,15 +2657,21 @@ API int armt_forward(void* p, const float** params, const ArmtForwardArgs* a) {
     API_CATCH(-1)
 }
 // backward of the last training forward: grads (+)= into the flat buffer given to the forward, then scaled by *gscale.
-API int armt_backward(void* p, const float** params, const int64_t* ids, const float* gscale, void* stream) {
+// armt_backward_range: layers [lo, hi) only (and the embeddings if lo == 0); call it for hi = n_layers first, then for
+// consecutive lower ranges down to lo = 0, which ends the backward. armt_backward = the whole range.
+API int armt_backward_range(void* p, const float** params, const int64_t* ids, const float* gscale, void* stream, int lo, int hi) {
     API_TRY
     Ctx* c = (Ctx*)p;
+    if (lo < 0 || hi > c->d.L || lo > hi) armt_fail("backward range out of bounds");
     c->params = params;
     set_stream(c, stream);
-    if (c->d.KD == 64) backward_impl<64>(c, ids, gscale); else backward_impl<128>(c, ids, gscale);
+    if (c->d.KD == 64) backward_impl<64>(c, ids, gscale, lo, hi); else backward_impl<128>(c, ids, gscale, lo, hi);
     CK(cudaGetLastError());
-    c->tr_grad = NULL;
+    if (lo == 0) c->tr_grad = NULL;
     return 0;
     API_CATCH(-1)
+}
+API int armt_backward(void* p, const float** params, const int64_t* ids, const float* gscale, void* stream) {
+    return armt_backward_range(p, params, ids, gscale, stream, 0, ((Ctx*)p)->d.L);
 }
 

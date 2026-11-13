@@ -22,10 +22,13 @@ fall back to the original PyTorch forward.
 """
 from __future__ import annotations
 
+import atexit
 import ctypes
 import fcntl
 import os
 import subprocess
+import sys
+import weakref
 from typing import Any
 
 import torch
@@ -50,6 +53,7 @@ register_optimizer_step_post_hook(lambda *_: mark_weights_changed())
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 MAXL = 256
+_N_GLOBAL = 4   # embeddings, final norm, lm_head, memory tokens: the parameters before the per-layer ones
 _L_NAMES = ["n1", "q", "k", "v", "b", "w", "f1", "g1", "qc", "kc", "vc", "f2", "alog", "dtb", "g2", "g2b", "on", "o", "n2",
             "w1", "w2", "w3", "mq", "mk", "mv", "mb", "mbb"]
 _L_TORCH = {"n1": "norm_1.weight", "q": "attn.q_proj.weight", "k": "attn.k_proj.weight", "v": "attn.v_proj.weight",
@@ -75,6 +79,11 @@ class ArmtForwardArgs(ctypes.Structure):
                 ("logits_last", ctypes.c_int), ("position", ctypes.c_int), ("train", ctypes.c_int), ("reset", ctypes.c_void_p),
                 ("state", ctypes.POINTER(ctypes.c_void_p)), ("grad", ctypes.c_void_p), ("repack", ctypes.c_int),
                 ("stream", ctypes.c_void_p)]
+
+
+# the library's GEMM algorithm choices (one tuning per GPU model and cuBLAS version, shared by processes and runs;
+# see mm() in armt.cu). Set ARMT_GEMM_CACHE="" to keep them in-process only, ARMT_GEMM_TUNE=0 to use cuBLAS's defaults.
+os.environ.setdefault("ARMT_GEMM_CACHE", os.path.join(_HERE, ".gemm_cache"))
 
 
 def library_path(precision: str) -> str:
@@ -138,6 +147,7 @@ def _lib(precision: str) -> ctypes.CDLL:
         lib.armt_set_tf32.argtypes = [vp, i]
         lib.armt_forward.argtypes, lib.armt_forward.restype = [vp, ctypes.POINTER(vp), ctypes.POINTER(ArmtForwardArgs)], i
         lib.armt_backward.argtypes, lib.armt_backward.restype = [vp, ctypes.POINTER(vp), vp, vp, vp], i
+        lib.armt_backward_range.argtypes, lib.armt_backward_range.restype = [vp, ctypes.POINTER(vp), vp, vp, vp, i, i], i
         _LIBS[precision] = lib
     return _LIBS[precision]
 
@@ -151,6 +161,17 @@ def _check(lib, rc, what):
         raise RuntimeError(f"carmt {what}: {lib.armt_last_error().decode()}")
 
 
+_LIVE: "weakref.WeakSet[_Context]" = weakref.WeakSet()
+
+
+@atexit.register
+def _destroy_all():
+    """Free every C context while PyTorch is still intact. Freeing goes back into PyTorch's allocator through a ctypes
+    callback, which crashes if it runs during interpreter teardown (a model kept in a module global until exit)."""
+    for c in list(_LIVE):
+        c.close()
+
+
 class _Context:
     """One C context (one library build) for one model."""
 
@@ -158,6 +179,7 @@ class _Context:
         self.lib = _lib(precision)
         self.precision = precision
         self.handle = self.lib.armt_create(ctypes.byref(cfg))
+        _LIVE.add(self)
         if not self.handle:
             raise RuntimeError(f"carmt: {self.lib.armt_last_error().decode()}")
         n = self.lib.armt_num_params(self.handle)
@@ -173,57 +195,103 @@ class _Context:
         self.version = None
         self.mask = None
 
-    def __del__(self):
+    def close(self):
+        h, self.handle = getattr(self, "handle", None), None
+        if h:
+            self.lib.armt_destroy(h)
+
+    def __del__(self, _finalizing=sys.is_finalizing):   # bound now: module globals may be None during teardown
+        if not getattr(self, "handle", None) or _finalizing():   # closed, or too late to call back into PyTorch
+            return
         try:
-            self.lib.armt_destroy(self.handle)
+            self.close()
         except Exception:
             pass
 
 
+class _Pending:
+    """One recorded training forward, shared by the autograd nodes of its backward."""
+
+    def __init__(self, runner, cctx, ids, grad, needs, keep):
+        self.runner, self.cctx, self.ids, self.grad, self.needs, self.keep = runner, cctx, ids, grad, needs, keep
+        self.ptrs = None
+
+    def run(self, lo: int, hi: int, gloss):
+        """C backward of layers [lo, hi) (and of the embeddings if lo == 0); hi = n_layers first, then downwards."""
+        cctx = self.cctx
+        if cctx.pending is not self:
+            raise RuntimeError("carmt: another training forward ran between this forward and its backward")
+        if self.ptrs is None:
+            self.ptrs = self.runner._param_ptrs()
+        g = gloss.detach().float().reshape(1).contiguous()
+        rc = cctx.lib.armt_backward_range(cctx.handle, self.ptrs, self.ids.data_ptr(), g.data_ptr(),
+                                          torch.cuda.current_stream().cuda_stream, lo, hi)
+        if lo == 0:
+            cctx.pending = None
+        _check(cctx.lib, rc, "backward")
+        if lo == 0:
+            _check(cctx.lib, cctx.lib.armt_release(cctx.handle, 0), "release")   # the training stores go back to PyTorch's cache
+            self.keep = None
+
+    def grads(self, j0: int, params):
+        out = []
+        for j, p in enumerate(params, j0):
+            if p is None or not self.needs[j] or self.cctx.numel[j] == 0:
+                out.append(None)
+            else:
+                o, n = self.cctx.offset[j], self.cctx.numel[j]
+                out.append(self.grad[o:o + n].view(p.shape))
+        return out
+
+
 class _TrainStep(torch.autograd.Function):
-    """loss = mean next-token CE of the C forward; backward = the C backward into a flat grad buffer."""
+    """loss = mean next-token CE of the C forward. The backward is split into one autograd node per layer
+    (``_LayerBackward``, chained on top of this one): each layer's gradients are handed to autograd as soon as the C
+    backward has finished that layer, so DDP / DeepSpeed start reducing them while the layers below still run. This
+    node's own backward does layer 0 and the embeddings and returns their and the global parameters' gradients."""
 
     @staticmethod
-    def forward(ctx, runner: "CARMT", cctx: _Context, ids, labels, inv_n, reset, *params):
+    def forward(ctx, runner: "CARMT", cctx: _Context, ids, labels, inv_n, reset, anchor, params_all, *params_own):
         B, T = ids.shape
-        mask = bytes(int(p is not None and p.requires_grad) for p in params)
+        mask = bytes(int(p is not None and p.requires_grad) for p in params_all)
         if mask != cctx.mask:      # frozen parameters: their gradient work is skipped in C
             cctx.lib.armt_set_grad_mask(cctx.handle, mask)
             cctx.mask = mask
         grad = torch.zeros(cctx.grad_size, device=ids.device, dtype=torch.float32)
         tl = torch.zeros(B, max(T - 1, 0), device=ids.device, dtype=torch.float32)
-        token = object()
         runner._call_forward(cctx, ids, labels=labels, inv_n=inv_n, token_losses=tl, train=True, reset=reset, grad=grad)
-        cctx.pending = token
-        ctx.runner, ctx.cctx, ctx.token, ctx.grad = runner, cctx, token, grad
-        ctx.keep = (reset, labels, inv_n)   # the C backward reads the reset masks: keep them alive (not reused by the allocator)
-        ctx.save_for_backward(ids)
-        ctx.needs = [p is not None and p.requires_grad for p in params]
+        # the C backward reads the reset masks and labels: keep them alive (not reused by the allocator) until it ran
+        pend = _Pending(runner, cctx, ids, grad, [p is not None and p.requires_grad for p in params_all], (reset, labels, inv_n))
+        cctx.pending = pend
+        ctx.pend = pend
+        ctx.own = params_own   # the global parameters and layer 0's
         loss = tl.sum() * inv_n[0]
         ctx.mark_non_differentiable(tl)
         return loss, tl
 
     @staticmethod
     def backward(ctx, gloss, _gtl):
-        cctx = ctx.cctx
-        if cctx.pending is not ctx.token:
-            raise RuntimeError("carmt: another training forward ran between this forward and its backward")
-        (ids,) = ctx.saved_tensors
-        ptrs = ctx.runner._param_ptrs()
-        g = gloss.detach().float().reshape(1).contiguous()
-        rc = cctx.lib.armt_backward(cctx.handle, ptrs, ids.data_ptr(), g.data_ptr(), torch.cuda.current_stream().cuda_stream)
-        cctx.pending = None
-        _check(cctx.lib, rc, "backward")
-        _check(cctx.lib, cctx.lib.armt_release(cctx.handle, 0), "release")   # the training stores go back to PyTorch's cache
-        grads = []
-        for j, p in enumerate(ctx.runner.params):
-            if not ctx.needs[j] or cctx.numel[j] == 0:
-                grads.append(None)
-            else:
-                o, n = cctx.offset[j], cctx.numel[j]
-                grads.append(ctx.grad[o:o + n].view(p.shape))
-        ctx.grad = None
-        return (None, None, None, None, None, None, *grads)
+        pend = ctx.pend
+        pend.run(0, min(1, pend.runner.cfg.n_layers), gloss)
+        grads = pend.grads(0, ctx.own)
+        ctx.pend = ctx.own = None
+        return (None, None, None, None, None, None, None, None, *grads)
+
+
+class _LayerBackward(torch.autograd.Function):
+    """Identity on the loss; its backward runs the C backward of layers [lo, hi) and returns their gradients."""
+
+    @staticmethod
+    def forward(ctx, pend: _Pending, lo: int, hi: int, j0: int, loss, *params):
+        ctx.pend, ctx.lo, ctx.hi, ctx.j0, ctx.params = pend, lo, hi, j0, params
+        return loss.clone()
+
+    @staticmethod
+    def backward(ctx, gloss):
+        ctx.pend.run(ctx.lo, ctx.hi, gloss)
+        grads = ctx.pend.grads(ctx.j0, ctx.params)
+        ctx.pend = ctx.params = None
+        return (None, None, None, None, gloss, *grads)
 
 
 class CARMT:
@@ -274,6 +342,12 @@ class CARMT:
             for n in _L_NAMES:
                 ps.append(mods[_L_TORCH[n]] if n in _L_TORCH else mm.get(_L_MEM[n]))
         return ps
+
+    def _anchor(self, device):
+        a = self.__dict__.setdefault("_anchors", {}).get(device)
+        if a is None:
+            a = self._anchors[device] = torch.zeros((), device=device, requires_grad=True)
+        return a
 
     def _param_ptrs(self):
         ps = self.params
@@ -396,7 +470,18 @@ class CARMT:
         cctx = self._context(self._precision())
 
         if grad_on:
-            loss, tl = _TrainStep.apply(self, cctx, ids, labels, inv_n, reset, *self.params)
+            ps = self.params
+            anchor = self._anchor(ids.device)   # keeps every node of the chain on the backward path, frozen layers too
+            nl = len(_L_NAMES)
+            loss, tl = _TrainStep.apply(self, cctx, ids, labels, inv_n, reset, anchor, ps, *ps[:_N_GLOBAL + nl])
+            pend = cctx.pending
+            # bottom to top: the backward runs the top layer first. CARMT_LAYER_NODES=0: one node for layers 1..L-1
+            per_layer = os.environ.get("CARMT_LAYER_NODES", "1") != "0"
+            groups = [(i, i + 1) for i in range(1, self.cfg.n_layers)] if per_layer else \
+                ([(1, self.cfg.n_layers)] if self.cfg.n_layers > 1 else [])
+            for lo, hi in groups:
+                j0 = _N_GLOBAL + lo * nl
+                loss = _LayerBackward.apply(pend, lo, hi, j0, loss, *ps[j0:_N_GLOBAL + hi * nl])
             return ARMTOutput(loss=loss, logits=None, token_losses=tl, state=None)
 
         with torch.no_grad():

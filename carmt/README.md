@@ -19,7 +19,7 @@ summary: [reports/carmt_speedup.md](../reports/carmt_speedup.md). Raw outputs: [
 | `train_carmt.py` | runs the unchanged `train.py` with carmt: `torchrun ... carmt/train_carmt.py <train.py args>` |
 | `jobs/train_carmt.json` | router job: the `gdn2_370m_armt` run through `train_carmt.py` |
 | `build_env.sh` | installs a CUDA 12.6 toolkit into a separate prefix (the jobs' env has none) and builds |
-| `tests/test_carmt.py`, `tests/dist_check.py` | 47 equivalence tests; DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs |
+| `tests/test_carmt.py`, `tests/dist_check.py` | 48 GPU tests; DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs |
 | `bench.py`, `profile_kernels.py`, `long_context.py`, `speedup_figure.py` | speed vs the original; per-kernel GPU time; memory vs context length; the report figure |
 
 ## Use
@@ -70,6 +70,17 @@ out = model(input_ids=x, return_state=True)    # ARMTState, interchangeable with
 
 After a change none of these can see (e.g. a raw NCCL write into the parameters), call `carmt.mark_weights_changed()`.
 
+**GEMM kernels.** On first use of each matmul shape the library times cuBLASLt's candidates against cuBLAS's default and keeps
+the fastest. The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>.txt` under a file lock, so DDP ranks
+and later runs read them instead of tuning again, and so compute with the same kernels. When two processes tune the same
+shape at once, the first one written wins and both use it. The lock is never held while the GPU works.
+- The choices are kept for good. Shapes first seen in a backward are timed while other work (e.g. DDP's all-reduce)
+  may share the GPU. Delete the cache file to re-tune.
+- `ARMT_GEMM_CACHE=<path prefix>` moves the file; `ARMT_GEMM_CACHE=` keeps the choices in-process only.
+- `ARMT_GEMM_TUNE=0` uses cuBLAS's defaults; `ARMT_GEMM_LOG=1` prints each shape's default and chosen time.
+- The memory's fp32 matmuls read the framework's parameter tensors, whose alignment depends on the framework (DeepSpeed's
+  flat buffers), so they always use cuBLAS's default: tuned choices never differ between, e.g., a DDP and a ZeRO run.
+
 **Memory and errors.**
 - The library allocates through PyTorch's caching allocator, so its memory appears in `torch.cuda.memory_*` and shares
   the cache.
@@ -79,6 +90,10 @@ After a change none of these can see (e.g. a raw NCCL write into the parameters)
 
 **Distributed.**
 - DDP, DDP with gradient accumulation and `no_sync`, and DeepSpeed ZeRO-1 / ZeRO-2 are checked (`tests/dist_check.py`).
+- The C backward runs as one autograd node per layer (top layer first), so DDP / ZeRO receive each layer's gradients as soon
+  as they are final. `CARMT_LAYER_NODES=0` makes it one node for all layers above the first. In the 2-GPU job this makes
+  no measurable difference (the exposed all-reduce drops from ~0.32 to ~0.24 s per optimizer step of 7.3 s:
+  `records/ddp_layer_nodes_rtx6000.log`).
 - Under DeepSpeed, enable its `torch_autocast` section; without it the engine silently disables an outer
   `torch.autocast`. DeepSpeed's `bf16` section can't be used: it converts the parameters to bf16.
 - Set `lower_precision_safe_modules: []` to keep the gradient all-reduce in fp32.
@@ -155,25 +170,28 @@ original runs with gradient checkpointing, as `train.py` runs it; without it, it
 
 | | original | carmt | speedup |
 |---|---|---|---|
-| **training, 2-GPU DDP: the `train.py` job** (`NCCL_P2P_DISABLE=1`, 262k tokens per step) | 26.3k tok/s | 33.2k tok/s | **1.26×** |
-| training step, 1 GPU (batch 8) | 4.62 s | 3.31 s | 1.39× |
-| inference forward with loss (batch 8) | 1.04 s | 0.84 s | 1.23× |
-| long-context inference, 10M tokens in one call, batch 1, last-position logits | 20.8k tok/s, 0.87 GB | 82.6k tok/s, 1.06 GB | 3.97× |
-| long-context loss over every token, 4.2M tokens (original streamed in 64k pieces with `state=`) | 20.3k tok/s, 3.4 GB | 80.0k tok/s, 1.3 GB (one call) | 3.94× |
-| generation (batch 1, 1k-token prompt + 64 tokens) | 16.2 ms/token | 2.9 ms/token | 5.63× |
-| memory of a training step: 1 GPU, batch 8 (`max_memory_allocated`) | 14.4 GB | 13.5 GB | |
-| memory logged by `train.py` in the DDP job | 17.1 GB | 19.6 GB | |
+| **training, 2-GPU DDP: the `train.py` job** (`NCCL_P2P_DISABLE=1`, 262k tokens per step) | 26.3k tok/s | 36.2k tok/s | **1.38×** |
+| training step, 1 GPU (batch 8) | 4.49 s | 3.03 s | 1.48× |
+| inference forward with loss (batch 8) | 1.01 s | 0.80 s | 1.27× |
+| long-context inference, 10M tokens in one call, batch 1, last-position logits | 20.8k tok/s, 0.87 GB | 88.8k tok/s, 1.09 GB | 4.27× |
+| long-context loss over every token, 4.2M tokens (original streamed in 64k pieces with `state=`) | 20.3k tok/s, 3.4 GB | 84.1k tok/s, 1.3 GB (one call) | 4.14× |
+| generation (batch 1, 1k-token prompt + 64 tokens) | 16.3 ms/token | 2.85 ms/token | 5.70× |
+| memory of a training step: 1 GPU, batch 8 (`max_memory_allocated`) | 14.4 GB | 13.6 GB | |
+| memory logged by `train.py` in the DDP job | 17.1 GB | 19.9 GB | |
 
-**DDP gains less than one GPU.** The C backward is one autograd node, so the all-reduce of the gradients (1.5 GB fp32) can
-only start after it.
+**DDP gains less than one GPU.** An optimizer step of the job (7.26 s) is two micro-steps of ~3.2 s (both GPUs busy and
+hot; 3.03 s alone), ~0.25 s of all-reduce the backward doesn't hide, and ~0.6 s of optimizer, clipping, data and logging.
+None of that shrinks with a faster model (`records/ddp_layer_nodes_rtx6000.log`).
 
-**Profile of a 1-GPU training step** (3.48 s GPU time, `records/profile_rtx6000_carmt_train.log`):
-- **cuBLAS GEMMs: 1.86 s (53%).** This includes the scan's chunk-batched GEMMs. The model's linear layers do 182 TFLOP per
-  step, so they average at least 98 TFLOPS; the RTX 6000 Ada's dense bf16 peak is 364 TFLOPS.
-- **GDN-2 scan kernels: 1.30 s (37%).**
-- **Other: 0.32 s (9%).**
+**Profile of a 1-GPU training step** (3.20 s GPU time, `records/profile_rtx6000_carmt_train.log`):
+- **cuBLAS GEMMs: 1.64 s (51%).** This includes the scan's chunk-batched GEMMs. The model's linear layers do 176 TFLOP per
+  step, so they average at least 107 TFLOPS; the RTX 6000 Ada's dense bf16 peak is 364 TFLOPS.
+- **GDN-2 scan kernels: 1.23 s (38%).**
+- **Other: 0.33 s (10%).**
 
-**Next speedups.**
-- GEMM tuning: cuBLAS picks m16n8k8 kernels for the large projections.
-- Fusing the scan stages.
-- Splitting the backward into per-layer autograd nodes, so DDP can overlap its all-reduce.
+**Tried and dropped.**
+- A two-stream schedule: two whole training steps on two streams run 2–8% slower than back to back
+  (`records/overlap_ceiling_rtx6000.log`). The GPU has no idle capacity for overlapping (layer, segment) steps to fill.
+- A low-register conv / gate kernel: no measurable change.
+
+**Next speedups (not done).** Fusing the scan stages; a single-token recurrent kernel for generation.

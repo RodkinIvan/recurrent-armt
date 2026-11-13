@@ -1,6 +1,6 @@
 {
  "title": "carmt: ARMT + Gated DeltaNet-2 in one CUDA file - speed vs the PyTorch / fla implementation",
- "date": "2026-11-12",
+ "date": "2026-11-12 (updated after the GEMM tuning / backward changes)",
  "figure": "reports/figures/fig5_carmt_speedup.png",
  "figure_caption": "GDN-2 370M + ARMT (32 memory tokens, 8 x 1024-token segments), bf16, RTX 6000 Ada. Same parameters, same outputs.",
  "setup": {
@@ -23,27 +23,27 @@
    "label": "Training, 2-GPU DDP\n(train.py job, 262k tok/step)",
    "metric": "tokens/s (2 GPUs)",
    "original": 26300,
-   "carmt": 33200,
-   "speedup": 1.26,
-   "source": "carmt/records/train_ddp_rtx6000_{original,carmt}.log: train.py vs carmt/train_carmt.py, same args as jobs/train.json gdn2_370m_armt (batch 8 x grad_accum 2 per GPU), NCCL_P2P_DISABLE=1, steady-state logged tok/s",
-   "note": "all-reduce of the gradients cannot overlap the C backward (one autograd node), so DDP gains less than single-GPU"
+   "carmt": 36200,
+   "speedup": 1.38,
+   "source": "original: carmt/records/train_ddp_rtx6000_original.log (100 steps); carmt: carmt/records/train_ddp_rtx6000_ab_new{1,2}.log (current build, 30 steps, 36.2k tok/s in both), alternated with the previous build (train_ddp_rtx6000_ab_old{1,2}.log: 34.3k / 34.4k, its recorded 34.2k reproduced). train.py vs carmt/train_carmt.py, same args as jobs/train.json gdn2_370m_armt (batch 8 x grad_accum 2 per GPU), NCCL_P2P_DISABLE=1, steady-state logged tok/s",
+   "note": "an optimizer step (7.26 s) = two micro-steps of ~3.2 s (3.03 s alone) + ~0.25 s of all-reduce the backward does not hide + ~0.6 s of optimizer, clipping, data and logging (carmt/records/ddp_layer_nodes_rtx6000.log); none of that shrinks with a faster model, so DDP gains less than the single-GPU step"
   },
   {
    "id": "train_1gpu",
    "label": "Training, 1 GPU\n(batch 8 x 8192 tokens)",
    "metric": "s per step",
-   "original": 4.624,
-   "carmt": 3.315,
-   "speedup": 1.39,
-   "source": "carmt/records/bench_rtx6000_bf16.json (carmt/bench.py)"
+   "original": 4.489,
+   "carmt": 3.034,
+   "speedup": 1.48,
+   "source": "carmt/records/bench_rtx6000_bf16.json (carmt/bench.py; both measured in the same run)"
   },
   {
    "id": "infer",
    "label": "Inference with loss\n(batch 8 x 8192 tokens)",
    "metric": "s per call",
-   "original": 1.035,
-   "carmt": 0.842,
-   "speedup": 1.23,
+   "original": 1.014,
+   "carmt": 0.801,
+   "speedup": 1.27,
    "source": "carmt/records/bench_rtx6000_bf16.json"
   },
   {
@@ -51,46 +51,46 @@
    "label": "Long-context inference\n(10M tokens, one call)",
    "metric": "tokens/s (batch 1, last-position logits)",
    "original": 20800,
-   "carmt": 82600,
-   "speedup": 3.97,
+   "carmt": 88800,
+   "speedup": 4.27,
    "source": "carmt/records/long_context_rtx6000.log, mode 'last' (carmt/long_context.py ... last), original after its constant-memory fix"
   },
   {
    "id": "generate",
    "label": "Generation\n(batch 1, 1k-token prompt)",
    "metric": "ms per generated token (prompt + 64 tokens, amortized)",
-   "original": 16.21,
-   "carmt": 2.88,
-   "speedup": 5.63,
-   "source": "carmt/records/bench_rtx6000_decode_after_fix.json (generation goes through the original's fixed forward)"
+   "original": 16.26,
+   "carmt": 2.85,
+   "speedup": 5.7,
+   "source": "carmt/records/bench_rtx6000_bf16.json (decode)"
   }
  ],
  "long_context": [
   {
    "tokens": 65536,
-   "carmt_gb": 0.95,
-   "carmt_tok_s": 67200,
+   "carmt_gb": 0.98,
+   "carmt_tok_s": 68500,
    "original_gb": 0.73,
-   "original_tok_s": 16700
+   "original_tok_s": 16800
   },
   {
    "tokens": 1048576,
-   "carmt_gb": 0.95,
-   "carmt_tok_s": 85900,
+   "carmt_gb": 0.98,
+   "carmt_tok_s": 92400,
    "original_gb": 0.73,
-   "original_tok_s": 20800
+   "original_tok_s": 20900
   },
   {
    "tokens": 4194304,
-   "carmt_gb": 0.98,
-   "carmt_tok_s": 82900,
+   "carmt_gb": 1.01,
+   "carmt_tok_s": 89400,
    "original_gb": 0.79,
-   "original_tok_s": 20800
+   "original_tok_s": 20900
   },
   {
    "tokens": 10485760,
-   "carmt_gb": 1.06,
-   "carmt_tok_s": 82600,
+   "carmt_gb": 1.09,
+   "carmt_tok_s": 88800,
    "original_gb": 0.87,
    "original_tok_s": 20800
   }
@@ -99,39 +99,47 @@
  "memory": {
   "train_1gpu_peak_gb": {
    "original": 14.4,
-   "carmt": 13.5,
+   "carmt": 13.6,
    "source": "bench_rtx6000_bf16.json, torch.cuda.max_memory_allocated (carmt allocates through PyTorch's caching allocator)"
   },
   "train_ddp_logged_gb": {
    "original": 17.1,
-   "carmt": 19.6,
+   "carmt": 19.9,
    "source": "train.py's logged 'mem' (max_memory_allocated) in the DDP runs; carmt adds the flat fp32 gradient buffer and its training stores"
   }
  },
  "training_parity": {
-  "run": "100 optimizer steps, 2-GPU DDP, identical data stream and seed (carmt/records/train_ddp_rtx6000_*.jsonl)",
+  "run": "100 optimizer steps, 2-GPU DDP, identical data stream and seed (carmt/records/train_ddp_rtx6000_*.jsonl, previous build); the current build's 30-step runs log the same losses to 4 decimals and identical eval losses",
   "train_loss": "within 2e-4 at every logged step (steps 10-100): equal to 4 decimals at 9 of the 10, step 90 2.3994 vs 2.3992",
   "eval": "val 2.4039 / 2.4007 / 2.4012 at steps 0 / 50 / 100 for both; val_long within 1e-4"
  },
  "equivalence": {
-  "tests": "47 GPU tests, also against the original after its long-context fix (carmt/records/tests_rtx6000.log, tests_rtx5880.log)",
+  "tests": "48 GPU tests, current build (carmt/records/tests_rtx6000.log)",
   "fp32_logits_vs_exact_reference": "<= 1e-4 relative across 9 configurations (the original's own TF32 kernels: ~1e-3)",
   "real_checkpoint_loss_fp32": "within 9.5e-7 of the exact reference (original: 1.2e-4)",
   "bf16_gradients_real_dims": "per-parameter relative-norm error vs fp32: median 0.84x the original's own bf16 error",
-  "distributed": "DDP, DDP + grad accumulation (+ no_sync), DeepSpeed ZeRO-1 / ZeRO-2: gradients match the reference (carmt/records/dist_check_2x_rtx5880.log)"
+  "distributed": "DDP, DDP + grad accumulation (+ no_sync), DeepSpeed ZeRO-1 / ZeRO-2: gradients match the reference; bf16 370M DDP and ZeRO-2 vs single-process carmt <= 4e-7 (carmt/records/dist_check_2x_rtx5880.log)"
  },
  "profile_train_step": {
   "source": "carmt/records/profile_rtx6000_carmt_train.log (carmt/profile_kernels.py)",
-  "gpu_time_ms": 3482.5,
-  "cublas_gemm_ms": 1860.5,
-  "gdn2_scan_kernels_ms": 1299.9,
-  "other_ms": 322.1,
-  "model_matmul_tflop_per_step": 182.3,
-  "model_matmul_tflops_lower_bound": 98,
-  "note": "182 TFLOP = forward + recomputed forward + backward of the model's linear layers; the 1.86 s of cuBLAS time also includes the scan's chunk-batched GEMMs, so 98 TFLOPS is a lower bound for the model GEMMs. RTX 6000 Ada dense bf16 peak: 364 TFLOPS."
+  "gpu_time_ms": 3195.7,
+  "cublas_gemm_ms": 1635.4,
+  "gdn2_scan_kernels_ms": 1229.6,
+  "other_ms": 330.7,
+  "model_matmul_tflop_per_step": 175.7,
+  "model_matmul_tflops_lower_bound": 107,
+  "note": "176 TFLOP = forward + recomputed forward (w3 on the memory rows only) + backward of the model's linear layers; the 1.64 s of cuBLAS time also includes the scan's chunk-batched GEMMs, so 107 TFLOPS is a lower bound for the model GEMMs. RTX 6000 Ada dense bf16 peak: 364 TFLOPS."
  },
  "long_context_loss_mode": {
-  "note": "with labels (loss over every token) the original's forward still keeps all hidden states: one call needs 20.7 GB at 1M tokens and runs out of memory at 4.2M; streamed in 64k pieces with state= it takes 3.4 GB at 20.3k tok/s. carmt computes the loss per segment: 1.43 GB and 77.2k tok/s at 10.5M tokens in one call.",
+  "note": "with labels (loss over every token) the original's forward still keeps all hidden states: one call needs 20.7 GB at 1M tokens and runs out of memory at 4.2M; streamed in 64k pieces with state= it takes 3.4 GB at 20.3k tok/s. carmt computes the loss per segment: 1.44 GB and 84.7k tok/s at 10.5M tokens in one call.",
   "source": "carmt/records/long_context_rtx6000.log, mode 'loss'"
- }
+ },
+ "changes_since_first_report": [
+  "GEMM algorithm tuning: on first use of each shape, cuBLASLt's candidates are timed against cuBLAS's default and the fastest kept; choices are persisted per GPU model and cuBLAS version (carmt/.gemm_cache_*), so DDP ranks and later runs use the same kernels (carmt/records/gemm_tune_rtx6000.log)",
+  "the backward's recompute runs the MLP output projection on the memory-token rows only",
+  "the backward is one autograd node per layer, so DDP / ZeRO can reduce a layer's gradients while the layers below run: no measurable gain in the 2-GPU job (36.1k tok/s with and without; exposed all-reduce 0.24 vs 0.32 s per optimizer step: carmt/records/ddp_layer_nodes_rtx6000.log)",
+  "measured and dropped: a two-stream schedule (two full training steps on two streams are 2-8% slower than back to back: carmt/records/overlap_ceiling_rtx6000.log); a lower-register rewrite of the conv/gate kernel (no change)",
+  "bug fix: a script keeping an accelerated model alive until interpreter exit segfaulted on exit (code 139); C contexts are now freed in an atexit handler (test_process_exits_cleanly_with_a_model_alive_at_exit)",
+  "review fix: the GEMM tuning no longer holds the cache file's lock while timing (the timing synchronizes the training stream, which with per-layer backward nodes may wait on another rank's collective); concurrent tunings of one shape resolve to the first entry written. dist_check passes from an empty cache"
+ ]
 }

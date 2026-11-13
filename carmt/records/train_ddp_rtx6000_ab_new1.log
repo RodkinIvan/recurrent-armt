@@ -1,0 +1,20 @@
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+data: separator 1, cooldown 32 windows, validation windows val 64, val_long 32
+model: GDN2ForCausalLM 399.5M params (18.92M ARMT), window 8192
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+[rank0]:[W1112 20:04:16.547473880 ProcessGroupNCCL.cpp:5072] Guessing device ID based on global rank. This can cause a hang if rank to GPU mapping is heterogeneous. You can specify device_id in init_process_group()
+[memory step 0] read/hidden 0.00e+00 (max 0.00e+00), W_mv rms 0.00e+00
+[eval step 0] val 2.4038 per segment 2.384 2.420 2.450 2.396 2.380 2.373 2.406 2.421 | val_long 2.5024 per segment 2.506 2.484 2.549 2.433 2.510 2.581 2.514 2.443
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 32.4k tok/s mem 19.9G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 36.1k tok/s mem 19.9G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 36.2k tok/s mem 19.9G
+[memory step 30] read/hidden 7.69e-03 (max 3.37e-02), W_mv rms 2.77e-04
+[eval step 30] val 2.3992 per segment 2.378 2.415 2.445 2.391 2.377 2.369 2.402 2.417 | val_long 2.4982 per segment 2.502 2.480 2.546 2.430 2.505 2.575 2.510 2.439
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.37s/it]Writing model shards: 100%|██████████| 1/1 [00:01<00:00,  1.37s/it]
+saved /mnt/data/users/ivan.rodkin/carmt_bench/outputs_ab/new1/last at step 30
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.07it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.07it/s]
+done

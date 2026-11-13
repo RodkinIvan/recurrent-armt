@@ -1,6 +1,7 @@
 # carmt: a CUDA implementation of recurrent ARMT + GDN-2 — speedup report
 
-*12 Nov 2026; updated after the PyTorch implementation's constant-memory long-context fix. Code: `carmt/` (one CUDA file, `armt.cu`, plus a ctypes binding). Every number below is from a file in
+*12 Nov 2026; updated after the PyTorch implementation's constant-memory long-context fix, and again after carmt's GEMM tuning
+and backward changes (see "Changes since the first version"). Code: `carmt/` (one CUDA file, `armt.cu`, plus a ctypes binding). Every number below is from a file in
 `carmt/records/`. Machine-readable version: `reports/carmt_speedup.json`. Figure: `reports/figures/fig5_carmt_speedup.png`
 (regenerate with `python carmt/speedup_figure.py`).*
 
@@ -11,12 +12,12 @@
   outputs, and returns the same carried state. It plugs into training with `carmt.accelerate(model)`, or
   `carmt/train_carmt.py <train.py args>`.
 - **Faster.**
-  - Training: **1.26×** in the real 2-GPU DDP job, **1.39×** on one GPU.
-  - Inference: **1.23×**.
-  - Long-context inference: **4.0×** at 10M tokens in one call.
-  - Generation: **5.6×**.
+  - Training: **1.38×** in the real 2-GPU DDP job, **1.48×** on one GPU.
+  - Inference: **1.27×**.
+  - Long-context inference: **4.3×** at 10M tokens in one call.
+  - Generation: **5.7×**.
 - **Long contexts.** Both implementations now process a 10M-token context in one call in about 1 GB:
-  - carmt: 82.6k tokens/s;
+  - carmt: 88.8k tokens/s;
   - PyTorch: 20.8k tokens/s, after its constant-memory fix for last-position calls.
 
   carmt also computes a loss over all 10M tokens in one call in 1.4 GB. The PyTorch loss path still keeps every hidden state.
@@ -41,31 +42,35 @@
 
 | workload | original | carmt | speedup |
 |---|---|---|---|
-| **Training, 2-GPU DDP** (`train.py` job, 262k tokens per optimizer step) | 26.3k tok/s | 33.2k tok/s | **1.26×** |
-| Training, 1 GPU (batch 8 × 8192 tokens, forward + backward) | 4.62 s | 3.31 s | **1.39×** |
-| Inference with loss (batch 8 × 8192 tokens) | 1.04 s | 0.84 s | **1.23×** |
-| Long-context inference, 10M tokens in one call (batch 1, last-position logits) | 20.8k tok/s | 82.6k tok/s | **3.97×** |
-| Generation (batch 1, 1k-token prompt + 64 tokens, amortized) | 16.2 ms/token | 2.9 ms/token | **5.63×** |
+| **Training, 2-GPU DDP** (`train.py` job, 262k tokens per optimizer step) | 26.3k tok/s | 36.2k tok/s | **1.38×** |
+| Training, 1 GPU (batch 8 × 8192 tokens, forward + backward) | 4.49 s | 3.03 s | **1.48×** |
+| Inference with loss (batch 8 × 8192 tokens) | 1.01 s | 0.80 s | **1.27×** |
+| Long-context inference, 10M tokens in one call (batch 1, last-position logits) | 20.8k tok/s | 88.8k tok/s | **4.27×** |
+| Generation (batch 1, 1k-token prompt + 64 tokens, amortized) | 16.3 ms/token | 2.85 ms/token | **5.70×** |
+
+The 1-GPU and generation rows measure both implementations in one `carmt/bench.py` run. The DDP row's carmt runs were
+alternated with runs of the previous build in the same session (36.2k vs 34.3–34.4k tok/s, the latter reproducing its
+recorded 34.2k).
 
 **Long context** (one call, `output_logits="last"`, no labels, batch 1; device memory used by the call):
 
 | context | carmt | original (fixed) | speedup |
 |---|---|---|---|
-| 65k tokens | 0.95 GB, 67.2k tok/s | 0.73 GB, 16.7k tok/s | 4.0× |
-| 1M tokens | 0.95 GB, 85.9k tok/s | 0.73 GB, 20.8k tok/s | 4.1× |
-| 4.2M tokens | 0.98 GB, 82.9k tok/s | 0.79 GB, 20.8k tok/s | 4.0× |
-| 10.5M tokens | 1.06 GB, 82.6k tok/s | 0.87 GB, 20.8k tok/s | 4.0× |
+| 65k tokens | 0.98 GB, 68.5k tok/s | 0.73 GB, 16.8k tok/s | 4.1× |
+| 1M tokens | 0.98 GB, 92.4k tok/s | 0.73 GB, 20.9k tok/s | 4.4× |
+| 4.2M tokens | 1.01 GB, 89.4k tok/s | 0.79 GB, 20.9k tok/s | 4.3× |
+| 10.5M tokens | 1.09 GB, 88.8k tok/s | 0.87 GB, 20.8k tok/s | 4.3× |
 
 - **Memory: both flat.** Since the PyTorch fix (segments-first, one segment embedded at a time, only the last segment's
   hidden states kept), both run in constant memory. carmt uses ~0.2 GB more, mostly its packed bf16 copy of the weights.
-- **Speed: ~4×** at every length.
+- **Speed: 4.1–4.4×** at every length.
 - **With a loss over every token** (labels), the PyTorch `forward` still keeps all hidden states: one call needs 20.7 GB at
   1M tokens and runs out of memory at 4.2M, so such inputs have to be streamed through its `state=` API (3.4 GB at 4.2M
-  tokens, 20.3k tok/s). carmt computes the loss per segment and does 10.5M tokens in one call in 1.43 GB at 77.2k tok/s.
+  tokens, 20.3k tok/s). carmt computes the loss per segment and does 10.5M tokens in one call in 1.44 GB at 84.7k tok/s.
 
 **Training memory.**
-- One GPU, batch 8: peak 13.5 GB (carmt) vs 14.4 GB (original).
-- In the 2-GPU job, `train.py` logs 19.6 GB vs 17.1 GB. carmt's figure includes a flat fp32 gradient buffer.
+- One GPU, batch 8: peak 13.6 GB (carmt) vs 14.4 GB (original).
+- In the 2-GPU job, `train.py` logs 19.9 GB vs 17.1 GB. carmt's figure includes a flat fp32 gradient buffer.
 
 ## Why it is faster
 
@@ -87,20 +92,25 @@
 - **Fused loss.** The loss and its gradient are computed in the forward pass, in 4096-row chunks, so `[B, T, vocab]` logits
   are never materialized.
 - **Recompute-based backward.** The backward recomputes each (layer, segment) from its stored input, the same memory/compute
-  trade-off as gradient checkpointing, but without autograd bookkeeping.
+  trade-off as gradient checkpointing, but without autograd bookkeeping. The recompute skips what the backward doesn't
+  read: the MLP's output projection runs on the memory-token rows only (they feed the memory write).
+- **Tuned GEMM kernels.** cuBLAS's default heuristic picks slow kernels for several of these shapes. On first use, each
+  shape's cuBLASLt candidates are timed against the default and the fastest is kept (19–32% faster on the large
+  weight-gradient GEMMs; about half of the shapes keep the default: `carmt/records/gemm_tune_rtx6000.log`). The choices are stored per GPU model and cuBLAS version, so
+  DDP ranks and later runs use the same kernels and get the same numbers.
 - **Generation without padding.** Generation reuses the fixed-size state; each token costs one segment step without Python
   overhead.
 
-**Where the time goes** (one training step on 1 GPU, 3.48 s of GPU time, `carmt/records/profile_rtx6000_carmt_train.log`):
+**Where the time goes** (one training step on 1 GPU, 3.20 s of GPU time, `carmt/records/profile_rtx6000_carmt_train.log`):
 
 | part | time | share |
 |---|---|---|
-| cuBLAS GEMMs (model linears + the scan's chunk-batched GEMMs + memory) | 1.86 s | 53% |
-| GDN-2 scan kernels (intra-chunk, state passes, conv/gate prep, gated norm) | 1.30 s | 37% |
-| other (norms, activations, loss, memory read/write) | 0.32 s | 9% |
+| cuBLAS GEMMs (model linears + the scan's chunk-batched GEMMs + memory) | 1.64 s | 51% |
+| GDN-2 scan kernels (intra-chunk, state passes, conv/gate prep, gated norm) | 1.23 s | 38% |
+| other (norms, activations, loss, memory read/write) | 0.33 s | 10% |
 
-The model's linear layers do 182 TFLOP per step (forward, recomputed forward, backward), so the GEMMs average at least
-98 TFLOPS. That figure is a lower bound, since the 1.86 s also includes the scan's GEMMs. For reference, the dense bf16 peak
+The model's linear layers do 176 TFLOP per step (forward, recomputed forward, backward), so the GEMMs average at least
+107 TFLOPS. That figure is a lower bound, since the 1.64 s also includes the scan's GEMMs. For reference, the dense bf16 peak
 of the RTX 6000 Ada is 364 TFLOPS.
 
 ## Correctness
@@ -110,18 +120,38 @@ of the RTX 6000 Ada is 364 TFLOPS.
 | fp32 logits, 9 configurations, vs an exact PyTorch reference (fla's own token-by-token GDN-2 recurrence) | ≤ 1e-4 relative; the original's TF32 kernels: ~1e-3 |
 | fp32 gradients, every parameter, same 9 configurations | ≤ max(3e-4, 1/5 of the original's own error) |
 | real 370M checkpoint, loss in fp32 | 9.5e-7 from the exact reference (original: 1.2e-4) |
-| all of the above against the PyTorch code after its long-context fix | 47 / 47 tests pass |
+| all of the above, current build, against the PyTorch code after its long-context fix | 48 / 48 tests pass |
 | bf16 gradients at the real dimensions, per parameter vs fp32 | median error 0.84× the original's own bf16 error |
 | state continuation, generation == forward, state interchangeable with the PyTorch implementation | ≤ 1e-4 |
-| DDP (incl. gradient accumulation and `no_sync`), DeepSpeed ZeRO-1 and ZeRO-2, 2 GPUs | gradients == reference; ranks identical after steps |
-| 100-step 2-GPU training run vs the PyTorch run, same data | train loss within 2e-4 at every logged step (equal to 4 decimals at 9 of 10); eval loss identical |
+| DDP (incl. gradient accumulation and `no_sync`), DeepSpeed ZeRO-1 and ZeRO-2, 2 GPUs | gradients == reference (bf16 370M vs single-process carmt: ≤ 4e-7); ranks identical after steps |
+| 100-step 2-GPU training run vs the PyTorch run, same data | train loss within 2e-4 at every logged step (equal to 4 decimals at 9 of 10); eval loss identical. The current build's 30-step runs log the same losses and eval losses as the previous build's |
 
-There are 47 GPU tests (`carmt/tests/`), plus `carmt/tests/dist_check.py` for the distributed checks.
+There are 48 GPU tests (`carmt/tests/`), plus `carmt/tests/dist_check.py` for the distributed checks.
+
+## Changes since the first version
+
+The first version of this report had DDP 1.30×, 1 GPU 1.39×, inference 1.23×, 10M-token context 4.0×. Since then, from
+a reviewer's list of speedup ideas:
+
+| idea | result |
+|---|---|
+| Tune the GEMM algorithms (cuBLASLt, per shape, persisted) | done: the main gain, 19–32% on the large weight-gradient GEMMs |
+| Recompute less in the backward | done: the MLP output projection on the memory rows only (about 4% of the GEMM work) |
+| Hand each layer's gradients to DDP / ZeRO as soon as they are final (one autograd node per layer) | done, but no measurable gain: 36.1k tok/s with and without (`carmt/records/ddp_layer_nodes_rtx6000.log`). The buckets do now launch layer by layer, but the whole fp32 all-reduce costs only ~0.3 s per optimizer step, and the per-layer launch hides ~0.07 s of it (~1%) |
+| Two-stream schedule (overlap independent (layer, segment) steps) | dropped: two whole training steps on two streams run 2–8% *slower* than back to back (`carmt/records/overlap_ceiling_rtx6000.log`), so the GPU has no idle capacity to fill |
+| Lower-register conv / gate kernel (151 → 61 registers) | dropped: no measurable change |
+| Fuse the scan stages; a single-token recurrent kernel for generation; CUDA graphs | not done |
+| (bug fix, found while measuring) a script that kept an accelerated model alive until interpreter exit segfaulted on exit (exit code 139, after finishing its work) | fixed: contexts are freed in an `atexit` handler; regression test added |
+| (review fix) the tuning held the cache file's lock while it timed kernels, which synchronizes the training stream; with collectives between layers that could deadlock two ranks tuning on a fresh cache | fixed: the lock is only held to read or append; if two processes tune a shape at once, the first entry written wins. The distributed checks pass from an empty cache |
 
 ## Caveats
 
-- **DDP gains less than one GPU** (1.26× vs 1.39×). The C backward is a single autograd node, so DDP's all-reduce of the
-  gradients starts only after it and can't overlap with backward compute.
+- **DDP gains less than one GPU** (1.38× vs 1.48×). An optimizer step of the 2-GPU job takes 7.26 s (`carmt/records/ddp_layer_nodes_rtx6000.log`):
+  - two micro-steps of about 3.2 s each (3.03 s on one GPU alone; with both GPUs busy and hot each runs a little slower);
+  - about 0.25 s of gradient all-reduce that the backward does not hide;
+  - about 0.6 s of everything else (optimizer, gradient clipping, data, logging; not broken down further).
+
+  None of this shrinks with a faster model, so it dilutes the speedup.
 - **Long-context memory is not an advantage** for last-position inference: since its fix the PyTorch implementation is
   flat too, and uses ~0.2 GB less. carmt's single-call advantage remains only for a loss over every token.
 - **Scope.** Only the GDN-2 backbone is supported: short conv size 4, head dim 64 or 128. Other backbones (RWKV-7, Mamba)

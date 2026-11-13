@@ -500,3 +500,20 @@ def test_training_steps_do_not_repack_weights():
         after = torch.cuda.memory_stats()["allocation.all.allocated"]
     # the second micro-step re-allocates only the training stores (11) and PyTorch's own tensors, not ~90 scratch buffers
     assert after - before < 60, after - before
+
+
+def test_process_exits_cleanly_with_a_model_alive_at_exit():
+    """a script that keeps an accelerated model in a global until interpreter exit must exit with code 0 (the C context
+    frees through PyTorch's allocator, so it has to be freed before interpreter teardown, not from __del__ during it)"""
+    import subprocess
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    code = "\n".join([
+        "import sys, torch", f"sys.path[:0] = [{here!r}, {os.path.dirname(os.path.dirname(here))!r}]",
+        "import carmt", "from test_carmt import make, ids_of",
+        "m = make(); carmt.accelerate(m); m.train(); ids = ids_of(2, 40)",
+        "with torch.autocast('cuda', dtype=torch.bfloat16): m(input_ids=ids, labels=ids).loss.backward()",
+        "torch.cuda.synchronize(); print('end', flush=True)"])
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0 and "end" in p.stdout, (p.returncode, p.stdout[-2000:], p.stderr[-2000:])
+    assert "Exception ignored" not in p.stderr, p.stderr[-2000:]

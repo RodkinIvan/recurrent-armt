@@ -1,0 +1,5 @@
+# overlap_ceiling.py: two independent carmt training steps (370M, batch 8 x 8192, bf16) on two CUDA streams at once vs
+# one after the other (RTX 6000 Ada, GPU 1). The upper bound of what a two-stream schedule could overlap.
+two steps: sequential 6.569 s, concurrent 7.085 s, gain -7.9%
+two steps: sequential 7.125 s, concurrent 7.439 s, gain -4.4%
+two steps: sequential 7.230 s, concurrent 7.382 s, gain -2.1%

@@ -2,53 +2,70 @@
 platform linux -- Python 3.11.18, pytest-9.2.0, pluggy-1.7.0
 rootdir: /mnt/data/users/ivan.rodkin/carmt/work
 plugins: anyio-4.16.0
-collected 47 items
+collected 48 items
 
-
-[fp32] loss exact-ref 12.396810 carmt 12.396811 (|d| 9.54e-07) original 12.396691 (|d| 1.18e-04)
-
-[bf16] loss exact-ref 12.393582 carmt 12.394575 (|d| 9.93e-04) original 12.394409 (|d| 8.27e-04)
-
-[bf16 real dims, scan_fp32=False] median rel-norm error carmt 9.41e-03 original 1.14e-02
-   memory_layers.12.W_mb.bias                              carmt 1.09e-02  original 7.92e-04  |g| 4.84e-02
-   memory_layers.12.W_mk.weight                            carmt 6.51e-02  original 1.92e-02  |g| 4.47e-01
-   memory_layers.12.W_mb.weight                            carmt 1.10e-02  original 4.02e-03  |g| 5.42e-01
-   memory_layers.11.W_mb.bias                              carmt 1.72e-02  original 6.50e-03  |g| 2.28e-02
-   memory_layers.11.W_mb.weight                            carmt 1.71e-02  original 6.53e-03  |g| 2.15e-01
-   memory_layers.1.W_mb.bias                               carmt 3.16e-03  original 1.27e-03  |g| 2.37e-02
-   memory_layers.4.W_mb.bias                               carmt 2.35e-01  original 1.14e-01  |g| 2.46e-03
-   memory_layers.15.W_mb.bias                              carmt 1.05e-02  original 5.55e-03  |g| 4.02e-02
-   memory_layers.6.W_mb.bias                               carmt 2.66e-03  original 1.41e-03  |g| 5.18e-02
-   memory_layers.10.W_mk.weight                            carmt 2.86e-02  original 1.62e-02  |g| 6.28e-01
-   memory_layers.4.W_mb.weight                             carmt 4.45e-02  original 2.65e-02  |g| 3.27e-02
-   memory_layers.11.W_mk.weight                            carmt 4.51e-02  original 2.86e-02  |g| 5.46e-01
-   ratio carmt/original: 5% 0.56  25% 0.70  50% 0.84  75% 0.92  95% 1.25  max 13.79
-   (other side) memory_layers.9.W_mb.bias                  carmt 7.44e-04  original 4.12e-03
-   (other side) memory_layers.7.W_mb.bias                  carmt 3.43e-03  original 1.43e-02
-   (other side) memory_layers.9.W_mb.weight                carmt 1.49e-03  original 5.45e-03
-   (other side) model.model.layers.3.attn.q_conv1d.weight  carmt 4.16e-03  original 1.44e-02
-
-[bf16 real dims, scan_fp32=True] median rel-norm error carmt 9.21e-03 original 1.14e-02
-   memory_layers.12.W_mb.bias                              carmt 3.72e-03  original 7.92e-04  |g| 4.84e-02
-   memory_layers.1.W_mk.weight                             carmt 1.42e-01  original 5.43e-02  |g| 1.71e-01
-   memory_layers.1.W_mb.bias                               carmt 3.17e-03  original 1.27e-03  |g| 2.37e-02
-   memory_layers.11.W_mb.weight                            carmt 1.45e-02  original 6.53e-03  |g| 2.15e-01
-   memory_layers.8.W_mb.bias                               carmt 7.33e-03  original 3.46e-03  |g| 8.41e-02
-   model.model.layers.4.norm_1.weight                      carmt 2.78e-02  original 1.31e-02  |g| 6.03e-02
-   memory_layers.12.W_mk.weight                            carmt 3.72e-02  original 1.92e-02  |g| 4.47e-01
-   memory_layers.6.W_mb.bias                               carmt 2.69e-03  original 1.41e-03  |g| 5.18e-02
-   memory_layers.8.W_mb.weight                             carmt 7.24e-03  original 3.80e-03  |g| 6.36e-01
-   memory_layers.10.W_mb.bias                              carmt 1.10e-01  original 5.97e-02  |g| 2.66e-03
-   memory_layers.1.W_mb.weight                             carmt 5.42e-03  original 2.94e-03  |g| 5.03e-02
-   memory_layers.11.W_mb.bias                              carmt 1.19e-02  original 6.50e-03  |g| 2.28e-02
-   ratio carmt/original: 5% 0.51  25% 0.70  50% 0.82  75% 0.92  95% 1.28  max 4.69
-   (other side) memory_layers.14.W_mb.bias                 carmt 8.38e-04  original 9.39e-03
-   (other side) memory_layers.7.W_mb.bias                  carmt 2.20e-03  original 1.43e-02
-   (other side) model.model.layers.5.norm_1.weight         carmt 8.14e-03  original 2.84e-02
-   (other side) memory_layers.7.W_mb.weight                carmt 3.54e-03  original 1.07e-02
-..
+carmt/tests/test_carmt.py .............................................. [ 95%]
+..                                                                       [100%]
 
 ==================================== PASSES ====================================
+__________________________ test_pretrained_gdn2[fp32] __________________________
+----------------------------- Captured stdout call -----------------------------
+
+[fp32] loss exact-ref 12.396810 carmt 12.396811 (|d| 9.54e-07) original 12.396691 (|d| 1.18e-04)
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14835.33it/s]
+__________________________ test_pretrained_gdn2[bf16] __________________________
+----------------------------- Captured stdout call -----------------------------
+
+[bf16] loss exact-ref 12.393582 carmt 12.394079 (|d| 4.97e-04) original 12.394256 (|d| 6.73e-04)
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14304.03it/s]
+__________________ test_gradients_bf16_real_dimensions[False] __________________
+----------------------------- Captured stdout call -----------------------------
+
+[bf16 real dims, scan_fp32=False] median rel-norm error carmt 9.66e-03 original 1.05e-02
+   memory_layers.1.W_mb.bias                               carmt 9.34e-03  original 5.23e-04  |g| 2.37e-02
+   memory_layers.6.W_mb.bias                               carmt 7.87e-03  original 5.46e-04  |g| 5.18e-02
+   memory_layers.5.W_mb.bias                               carmt 1.28e-01  original 3.65e-02  |g| 1.61e-03
+   memory_layers.6.W_mb.weight                             carmt 6.86e-03  original 2.28e-03  |g| 2.06e-01
+   memory_layers.1.W_mb.weight                             carmt 8.63e-03  original 2.92e-03  |g| 5.03e-02
+   memory_layers.5.W_mb.weight                             carmt 4.43e-02  original 1.56e-02  |g| 1.21e-02
+   model.model.layers.5.attn.k_conv1d.weight               carmt 2.30e-02  original 9.43e-03  |g| 4.33e-01
+   memory_layers.8.W_mb.bias                               carmt 1.02e-02  original 5.06e-03  |g| 8.41e-02
+   memory_layers.9.W_mb.bias                               carmt 3.45e-03  original 1.95e-03  |g| 7.24e-02
+   memory_layers.14.W_mb.bias                              carmt 4.11e-03  original 2.39e-03  |g| 8.60e-02
+   model.model.layers.5.attn.A_log                         carmt 1.95e-02  original 1.20e-02  |g| 2.55e-02
+   model.model.layers.5.attn.k_proj.weight                 carmt 1.84e-02  original 1.23e-02  |g| 1.90e+00
+   ratio carmt/original: 5% 0.68  25% 0.86  50% 0.90  75% 0.97  95% 1.23  max 17.85
+   (other side) memory_layers.13.W_mb.bias                 carmt 1.11e-04  original 5.58e-03
+   (other side) memory_layers.7.W_mb.bias                  carmt 2.99e-03  original 1.12e-02
+   (other side) memory_layers.10.W_mk.weight               carmt 1.22e-02  original 4.08e-02
+   (other side) memory_layers.1.W_mk.weight                carmt 3.08e-02  original 8.54e-02
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14422.35it/s]
+__________________ test_gradients_bf16_real_dimensions[True] ___________________
+----------------------------- Captured stdout call -----------------------------
+
+[bf16 real dims, scan_fp32=True] median rel-norm error carmt 9.12e-03 original 1.05e-02
+   memory_layers.1.W_mb.bias                               carmt 2.04e-02  original 5.23e-04  |g| 2.37e-02
+   memory_layers.1.W_mb.weight                             carmt 1.93e-02  original 2.92e-03  |g| 5.03e-02
+   memory_layers.6.W_mb.bias                               carmt 3.34e-03  original 5.46e-04  |g| 5.18e-02
+   memory_layers.5.W_mb.weight                             carmt 4.42e-02  original 1.56e-02  |g| 1.21e-02
+   memory_layers.5.W_mb.bias                               carmt 9.92e-02  original 3.65e-02  |g| 1.61e-03
+   model.model.layers.3.attn.q_conv1d.weight               carmt 1.53e-02  original 8.21e-03  |g| 5.96e-01
+   memory_layers.7.W_mb.weight                             carmt 1.26e-02  original 7.56e-03  |g| 1.22e-01
+   model.model.layers.3.attn.f_proj.0.weight               carmt 2.99e-02  original 1.90e-02  |g| 3.02e-02
+   memory_layers.14.W_mb.bias                              carmt 3.73e-03  original 2.39e-03  |g| 8.60e-02
+   memory_layers.3.W_mb.bias                               carmt 3.59e-02  original 2.32e-02  |g| 1.12e-02
+   memory_layers.13.W_mq.weight                            carmt 4.22e-02  original 2.78e-02  |g| 2.87e-01
+   memory_layers.6.W_mb.weight                             carmt 3.45e-03  original 2.28e-03  |g| 2.06e-01
+   ratio carmt/original: 5% 0.61  25% 0.83  50% 0.88  75% 0.94  95% 1.21  max 38.89
+   (other side) memory_layers.15.W_mb.bias                 carmt 6.50e-04  original 7.42e-03
+   (other side) memory_layers.12.W_mk.weight               carmt 8.62e-03  original 6.31e-02
+   (other side) memory_layers.10.W_mb.bias                 carmt 2.63e-02  original 8.45e-02
+   (other side) memory_layers.0.W_mb.weight                carmt 2.34e-03  original 7.12e-03
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14139.13it/s]
 =========================== short test summary info ============================
 PASSED carmt/tests/test_carmt.py::test_logits_fp32[default]
 PASSED carmt/tests/test_carmt.py::test_logits_fp32[head128]
@@ -97,4 +114,5 @@ PASSED carmt/tests/test_carmt.py::test_library_memory_is_visible_to_torch
 PASSED carmt/tests/test_carmt.py::test_gradients_bf16_real_dimensions[False]
 PASSED carmt/tests/test_carmt.py::test_gradients_bf16_real_dimensions[True]
 PASSED carmt/tests/test_carmt.py::test_training_steps_do_not_repack_weights
-============================= 47 passed in 21.96s ==============================
+PASSED carmt/tests/test_carmt.py::test_process_exits_cleanly_with_a_model_alive_at_exit
+============================= 48 passed in 25.52s ==============================

@@ -10,16 +10,16 @@ FLAGS     := -O3 -arch=$(ARCH) -std=c++17 -Xcompiler -fPIC -shared -I$(CUDA_HOME
 all: libarmt_bf16.so libarmt_fp32.so libarmt_bf16s32.so
 
 libarmt_bf16.so: armt.cu
-	$(NVCC) $(FLAGS) armt.cu -lcublas -o $@
+	$(NVCC) $(FLAGS) armt.cu -lcublas -lcublasLt -o $@
 
 libarmt_bf16s32.so: armt.cu
-	$(NVCC) $(FLAGS) -DARMT_SCAN32 armt.cu -lcublas -o $@
+	$(NVCC) $(FLAGS) -DARMT_SCAN32 armt.cu -lcublas -lcublasLt -o $@
 
 libarmt_fp32.so: armt.cu
-	$(NVCC) $(FLAGS) -DARMT_FP32 armt.cu -lcublas -o $@
+	$(NVCC) $(FLAGS) -DARMT_FP32 armt.cu -lcublas -lcublasLt -o $@
 
 libarmt_bf16split.so: armt.cu      # optional: hi/lo bf16 state in the forward products (see ARMT_SPLIT_STATE)
-	$(NVCC) $(FLAGS) -DARMT_SPLIT_STATE armt.cu -lcublas -o $@
+	$(NVCC) $(FLAGS) -DARMT_SPLIT_STATE armt.cu -lcublas -lcublasLt -o $@
 
 clean:
 	rm -f libarmt_*.so

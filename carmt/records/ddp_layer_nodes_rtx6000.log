@@ -1,0 +1,71 @@
+# per-layer backward nodes in DDP (2x RTX 6000 Ada, NCCL_P2P_DISABLE=1), current build
+# 1) 30-step train_carmt.py jobs (arguments as in train_ddp_rtx6000_ab_*.log), CARMT_LAYER_NODES=0 (one node) and =1
+#    (one node per layer, the default), alternated
+== ddp_nodes01 (CARMT_LAYER_NODES=0, round 1)
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 34.3k tok/s mem 19.9G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 36.0k tok/s mem 19.9G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 36.1k tok/s mem 19.9G
+[eval step 30] val 2.3992 per segment 2.378 2.415 2.445 2.391 2.377 2.369 2.402 2.417 | val_long 2.4982 per segment 2.502 2.480 2.546 2.430 2.505 2.575 2.510 2.439
+== ddp_nodes11 (CARMT_LAYER_NODES=1, round 1)
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 32.6k tok/s mem 19.9G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 36.1k tok/s mem 19.9G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 36.1k tok/s mem 19.9G
+[eval step 30] val 2.3992 per segment 2.378 2.415 2.445 2.391 2.377 2.369 2.402 2.417 | val_long 2.4982 per segment 2.502 2.480 2.546 2.430 2.505 2.575 2.510 2.439
+== ddp_nodes02 (CARMT_LAYER_NODES=0, round 2)
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 32.7k tok/s mem 19.9G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 36.0k tok/s mem 19.9G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 36.1k tok/s mem 19.9G
+[eval step 30] val 2.3992 per segment 2.378 2.415 2.445 2.391 2.377 2.369 2.402 2.417 | val_long 2.4982 per segment 2.502 2.480 2.546 2.430 2.505 2.575 2.510 2.438
+== ddp_nodes12 (CARMT_LAYER_NODES=1, round 2)
+step 10 loss 2.3975 seg0 2.452 seg7 2.388 lr 1.7e-05/5.0e-05 gnorm 0.34 32.6k tok/s mem 19.9G
+step 20 loss 2.4081 seg0 2.501 seg7 2.391 lr 3.3e-05/1.0e-04 gnorm 0.29 36.0k tok/s mem 19.9G
+step 30 loss 2.4180 seg0 2.531 seg7 2.420 lr 5.0e-05/1.5e-04 gnorm 0.31 36.1k tok/s mem 19.9G
+[eval step 30] val 2.3992 per segment 2.378 2.415 2.445 2.391 2.377 2.369 2.402 2.417 | val_long 2.4983 per segment 2.502 2.480 2.546 2.430 2.505 2.575 2.510 2.438
+
+# 2) ddp_diag.py: one micro-step (batch 8 x 8192 per rank) under no_sync vs with the gradient all-reduce; the
+#    difference is the all-reduce time not hidden behind the backward. CPU-side times of the node calls and of the
+#    bucket all-reduce launches (s from the step start) for the last synchronizing step, nodes on (tail):
+=== CARMT_LAYER_NODES=1
+  bucket  36  2.639
+  bucket  37  2.639
+  bucket  38  2.643
+  node     2  2.647
+  bucket  39  2.789
+  bucket  40  2.790
+  bucket  41  2.794
+  node     1  2.798
+  bucket  42  2.940
+  bucket  43  2.940
+  bucket  44  2.945
+  node     0  2.949
+  bucket  45  3.091
+  bucket  46  3.094
+  bucket  47  3.103
+  bucket  48  3.105
+  bucket  49  3.107
+  end          3.524
+no_sync micro-step 3.193 s (median-ish), sync 3.437 s, exposed all-reduce 0.244 s
+all no_sync ['3.119', '3.174', '3.213', '3.250'] all sync ['3.334', '3.410', '3.465', '3.524']
+=== CARMT_LAYER_NODES=0
+  bucket  32  3.149
+  bucket  33  3.152
+  bucket  34  3.157
+  bucket  35  3.163
+  bucket  36  3.163
+  bucket  37  3.167
+  bucket  38  3.175
+  bucket  39  3.180
+  bucket  40  3.181
+  bucket  41  3.187
+  bucket  42  3.193
+  bucket  43  3.199
+  node     0  3.199
+  bucket  44  3.223
+  bucket  45  3.224
+  bucket  46  3.224
+  bucket  47  3.224
+  end          3.667
+no_sync micro-step 3.334 s (median-ish), sync 3.652 s, exposed all-reduce 0.318 s
+all no_sync ['3.295', '3.323', '3.345', '3.362'] all sync ['3.599', '3.637', '3.682', '3.667']
+# (both diag processes segfaulted on exit afterwards: carmt freed its context from __del__ during interpreter teardown;
+#  fixed in carmt/__init__.py, see test_process_exits_cleanly_with_a_model_alive_at_exit)
