@@ -16,7 +16,10 @@ Supported:
     (GLA, DeltaNet, Gated DeltaNet, HGRN2, RWKV-6, ...); fla layers already continue from a state.
   * transformers Mamba (v1) and Mamba2: their cached path can only decode one token at a time, so
     the mixers are re-implemented here (same weights) to continue a whole chunk from a state.
-Attention / hybrid models are rejected: their state (KV cache) grows with the sequence.
+  * hybrids: transformers Qwen3.5 (Gated DeltaNet layers + full softmax-attention layers). The
+    attention layers stay as they are: their "state" is the KV cache of all the tokens before, which
+    grows with the sequence (``is_attention(i)``); ARMT wraps only the recurrent layers.
+Other attention models are rejected (pure fla attention / fla hybrids).
 """
 from __future__ import annotations
 
@@ -48,6 +51,11 @@ class Backbone:
 
     def norm(self, hidden: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
+
+    def is_attention(self, i: int) -> bool:
+        """Block ``i`` is softmax attention: its state is a KV cache (``None`` = no tokens yet) that grows with the
+        sequence, it gets no associative memory and the recurrent-state dropout / reset leaves it alone."""
+        return False
 
     @property
     def lm_head(self) -> nn.Module:
@@ -268,15 +276,110 @@ class Mamba2Backbone(Backbone):
         return m.out_proj(y), (conv_state, ssm_state)
 
 
+# ------------------------------------------------------------------------------------- qwen3.5 (hybrid)
+def _gated_delta_rule_ref(q, k, v, g, beta, S):
+    """Gated delta rule, one step at a time (q, k L2-normalized, q scaled by K^-1/2):
+    S_t = exp(g_t) S_{t-1} + k_t (beta_t (v_t - S^T k_t))^T, o_t = S_t^T q_t.
+    q, k [b, T, h, K]; v [b, T, h, V]; g, beta [b, T, h]; S [b, h, K, V]."""
+    l2norm = lambda x: x * torch.rsqrt((x * x).sum(dim=-1, keepdim=True) + 1e-6)     # as fla's kernels (eps inside)
+    q, k = l2norm(q) * q.shape[-1] ** -0.5, l2norm(k)
+    ys = []
+    for t in range(q.shape[1]):
+        S = S * torch.exp(g[:, t])[..., None, None]
+        delta = beta[:, t, :, None] * (v[:, t] - torch.einsum("bhkv,bhk->bhv", S, k[:, t]))
+        S = S + k[:, t, :, :, None] * delta[:, :, None, :]
+        ys.append(torch.einsum("bhkv,bhk->bhv", S, q[:, t]))
+    return torch.stack(ys, dim=1), S
+
+
+class Qwen35Backbone(Backbone):
+    """transformers ``Qwen3_5ForCausalLM`` (the text model of Qwen3.5): pre-norm blocks, each a Gated DeltaNet or a
+    gated full-attention mixer followed by a SwiGLU MLP. Both mixers are re-implemented here (same weights) to
+    continue a chunk from a state: the GDN from (conv state, delta-rule state), fixed size; the attention from the
+    KV cache (post-RoPE keys, values) of all the tokens before, so a chunk sits at positions past .. past + T - 1."""
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.inner = model.model
+        self.num_layers = len(self.inner.layers)
+        self.hidden_size = model.config.hidden_size
+
+    def embed(self, input_ids):
+        return self.inner.embed_tokens(input_ids)
+
+    def norm(self, hidden):
+        return self.inner.norm(hidden)
+
+    def is_attention(self, i):
+        return self.inner.layers[i].block_type == "full_attention"
+
+    def block(self, i, hidden, aux, state):
+        layer = self.inner.layers[i]
+        x = layer.input_layernorm(hidden)
+        if self.is_attention(i):
+            out, state = self._attention(layer.self_attn, x, state)
+        else:
+            out, state = self._gdn(layer.linear_attn, x, state)
+        hidden = hidden + out
+        return hidden + layer.mlp(layer.post_attention_layernorm(hidden)), aux, state
+
+    @staticmethod
+    def _gdn(m, x, state):
+        conv_state, S = state if state is not None else (None, None)
+        b, T, _ = x.shape
+        qkv, conv_state = _conv_with_state(m.in_proj_qkv(x).transpose(1, 2), conv_state, m.conv1d, m.activation)
+        q, k, v = torch.split(qkv.transpose(1, 2), [m.key_dim, m.key_dim, m.value_dim], dim=-1)
+        q, k, v = q.reshape(b, T, -1, m.head_k_dim), k.reshape(b, T, -1, m.head_k_dim), v.reshape(b, T, -1, m.head_v_dim)
+        if m.num_v_heads > m.num_k_heads:
+            q = q.repeat_interleave(m.num_v_heads // m.num_k_heads, dim=2)
+            k = k.repeat_interleave(m.num_v_heads // m.num_k_heads, dim=2)
+        beta = m.in_proj_b(x).sigmoid()
+        g = -m.A_log.float().exp() * F.softplus(m.in_proj_a(x).float() + m.dt_bias)
+        acc = _acc(v)
+        if S is None:
+            S = x.new_zeros(b, m.num_v_heads, m.head_k_dim, m.head_v_dim, dtype=acc)
+        if _use_kernels(x):
+            from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+            o, S = chunk_gated_delta_rule(q, k, v, g=g, beta=beta, initial_state=S, output_final_state=True,
+                                          use_qk_l2norm_in_kernel=True)
+        else:
+            o, S = _gated_delta_rule_ref(q.to(acc), k.to(acc), v.to(acc), g.to(acc), beta.to(acc), S.to(acc))
+        z = m.in_proj_z(x)
+        o = m.norm(o.to(v.dtype).reshape(-1, m.head_v_dim), z.reshape(-1, m.head_v_dim)).reshape(b, T, -1)
+        return m.out_proj(o), (conv_state, S)
+
+    def _attention(self, m, x, kv):
+        from torch.nn.attention.bias import causal_lower_right
+        from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb, repeat_kv
+        b, T, _ = x.shape
+        q, gate = m.q_proj(x).view(b, T, -1, 2 * m.head_dim).chunk(2, dim=-1)
+        q = m.q_norm(q).transpose(1, 2)
+        k = m.k_norm(m.k_proj(x).view(b, T, -1, m.head_dim)).transpose(1, 2)
+        v = m.v_proj(x).view(b, T, -1, m.head_dim).transpose(1, 2)
+        past = 0 if kv is None else kv[0].shape[2]
+        positions = torch.arange(past, past + T, device=x.device).expand(b, -1)
+        q, k = apply_rotary_pos_emb(q, k, *self.inner.rotary_emb(x, positions))
+        if kv is not None:
+            k, v = torch.cat([kv[0], k.to(kv[0].dtype)], dim=2), torch.cat([kv[1], v.to(kv[1].dtype)], dim=2)
+        n_rep = m.num_key_value_groups
+        mask = None if past == 0 or T == 1 else causal_lower_right(T, past + T)   # the chunk sees everything before it
+        y = F.scaled_dot_product_attention(q.to(k.dtype), repeat_kv(k, n_rep), repeat_kv(v, n_rep), attn_mask=mask,
+                                           is_causal=past == 0 and T > 1, scale=m.scaling)
+        y = y.transpose(1, 2).reshape(b, T, -1) * torch.sigmoid(gate.reshape(b, T, -1))
+        return m.o_proj(y), (k, v)
+
+
 # ------------------------------------------------------------------------------------------- loading
 HF_RECURRENT = {"mamba": "MambaForCausalLM", "mamba2": "Mamba2ForCausalLM"}
+HF_HYBRID = {"qwen3_5": "Qwen3_5ForCausalLM", "qwen3_5_text": "Qwen3_5ForCausalLM"}
+HF_MODELS = HF_RECURRENT | HF_HYBRID
 
 
 def _model_class(model_type: str):
     import transformers
-    if model_type in HF_RECURRENT:
+    if model_type in HF_MODELS:
         # explicit transformers classes: importing fla re-registers "mamba"/"mamba2" for the Auto classes
-        return getattr(transformers, HF_RECURRENT[model_type])
+        return getattr(transformers, HF_MODELS[model_type])
     import fla  # noqa: F401  (registers the fla model types with the Auto classes)
     return transformers.AutoModelForCausalLM
 
@@ -288,11 +391,14 @@ def load_base_model(name_or_config: str | dict, dtype: torch.dtype | None = None
     from transformers import AutoConfig, PretrainedConfig
     if isinstance(name_or_config, str):
         model_type = PretrainedConfig.get_config_dict(name_or_config)[0]["model_type"]
-        return _model_class(model_type).from_pretrained(name_or_config, dtype=dtype)
+        kw = {}
+        if model_type == "qwen3_5":       # a vision-language checkpoint: load its text model only
+            kw["config"] = AutoConfig.from_pretrained(name_or_config).text_config
+        return _model_class(model_type).from_pretrained(name_or_config, dtype=dtype, **kw)
     cfg = dict(name_or_config)
     model_type = cfg.pop("model_type")
     cls = _model_class(model_type)
-    if model_type in HF_RECURRENT:
+    if model_type in HF_MODELS:
         config = cls.config_class(**cfg)
         return cls(config).to(dtype)
     config = AutoConfig.for_model(model_type, **cfg)
@@ -306,6 +412,8 @@ def make_backbone(model: nn.Module) -> Backbone:
         return MambaBackbone(model)
     if module.startswith("transformers.") and model_type == "mamba2":
         return Mamba2Backbone(model)
-    if (module.startswith("fla.") and model_type not in HF_RECURRENT) or model_type == "gdn2_lm":
+    if module.startswith("transformers.") and model_type == "qwen3_5_text":
+        return Qwen35Backbone(model)
+    if (module.startswith("fla.") and model_type not in HF_MODELS) or model_type == "gdn2_lm":
         return FLABackbone(model)          # fla models and our GDN-2 LM (fla GDN-2 layers in fla-style blocks)
     raise ValueError(f"{type(model).__name__} ({model_type}) is not a supported recurrent model")

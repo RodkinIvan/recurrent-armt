@@ -1,7 +1,8 @@
 # Recurrent ARMT
 
 ARMT (Associative Recurrent Memory Transformer) on top of **recurrent** language models instead of
-transformers: RWKV-7 and other fla (flash-linear-attention) models, Mamba, Mamba2.
+transformers: RWKV-7 and other fla (flash-linear-attention) models, Mamba, Mamba2, and the recurrent layers
+of attention / Gated DeltaNet hybrids (Qwen3.5).
 
 The original ARMT (e.g. `irodkin/ARMT-Gemma-3-1B-IT-8x1024-portable`) splits the input into segments; in
 every layer, the segment and `num_mem_tokens` memory tokens go through the layer, the memory tokens'
@@ -19,7 +20,7 @@ Both are fixed-size and differentiable: gradients from later segments reach earl
 | file | |
 |---|---|
 | `recurrent_armt/memory.py` | `AssociativeMemory`: DPFP read / delta-rule write with correction (same as the original `_associate_with_mem` / `_update_mem_with_mem`) |
-| `recurrent_armt/backbones.py` | one interface over recurrent LMs: `block(i, hidden, aux, state) -> (hidden, aux, state)` continuing from any state; fla models as they are, Mamba / Mamba2 mixers re-implemented on the same weights (their HF cached path only decodes one token at a time) with CUDA kernels + pure-PyTorch reference scans |
+| `recurrent_armt/backbones.py` | one interface over recurrent LMs: `block(i, hidden, aux, state) -> (hidden, aux, state)` continuing from any state; fla models as they are, Mamba / Mamba2 / Qwen3.5 (GDN + attention) mixers re-implemented on the same weights (their HF cached path only decodes one token at a time) with CUDA kernels + pure-PyTorch reference scans |
 | `recurrent_armt/modeling.py` | `RecurrentARMTConfig`, `RecurrentARMTForCausalLM` (HF `PreTrainedModel`), `ARMTState` |
 | `recurrent_armt/loss.py` | next-token loss computed in checkpointed chunks (no `[B, L, vocab]` logits kept) |
 | `recurrent_armt/data.py` | streaming fineweb-edu-100b-shuffle with document-aware shuffling, resumable |
@@ -57,6 +58,19 @@ With `W_mv = 0` at initialization (as in the original) the model is then *exactl
 training starts from the pretrained model's quality. `True`: the next segment continues from the state
 after the memory tokens (one block call per segment instead of two, but the memory tokens perturb the
 pretrained model's stream from the start).
+
+### Hybrid backbones (Qwen3.5)
+
+Qwen3.5 (0.8B / 2B / ...) stacks 3 Gated DeltaNet layers per full-attention layer. ARMT goes on the GDN layers
+only: they become GDN-ARMT layers (associative memory + GDN state); the attention layers stay as they are.
+An attention layer's "state" is the KV cache of all the tokens before (post-RoPE keys, values), so a chunk
+continues it at positions `past .. past + T - 1`, and that part of the state grows with the sequence. The
+memory tokens pass through attention like through any block: as a read-out branch they attend to the cache
+(at the positions right after the segment) but are not added to it, so the real tokens see exactly what the
+base model sees and ARMT at init is the base model. Layers-first and segments-first both work (bitwise
+equal), as do pieces and generation. State dropout / `state_reset` touch the GDN states only.
+
+    model = RecurrentARMTForCausalLM(RecurrentARMTConfig(base_model_name="Qwen/Qwen3.5-0.8B-Base", segment_size=1024))
 
 Removed from the transformer version: attention masks, sliding window / KV cache, `past_attn_mask`,
 position ids / rotary, the sink token, flash-attention / liger paths, ACT. Padding is not supported (a

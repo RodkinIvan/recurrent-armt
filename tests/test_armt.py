@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from helpers import ATOL, CUDA, DEVICE, HAS_FLA, KINDS, KTOL, grad_tol, max_diff, random_ids, tiny_armt, tiny_base, train_autocast
+from helpers import ATOL, CUDA, DEVICE, HAS_FLA, HYBRIDS, KINDS, KTOL, grad_tol, max_diff, random_ids, tiny_armt, tiny_base, train_autocast
 from recurrent_armt import ARMTState, RecurrentARMTForCausalLM, backbones
 from recurrent_armt.modeling import map_tensors
 
@@ -25,9 +25,10 @@ def base_logits(base, ids):
         return base(input_ids=ids).logits
 
 
-def tol_vs(ref):
-    """HF returns float32 logits even for a float64 model: compare at the precision of the reference."""
-    return KTOL if ref.dtype == torch.float64 or CUDA else 1e-5
+def tol_vs(ref, kind=None):
+    """HF returns float32 logits even for a float64 model, and HF Qwen3.5 runs its GDN in float32:
+    compare at the precision of the reference."""
+    return KTOL if CUDA or (ref.dtype == torch.float64 and kind not in HYBRIDS) else 1e-5
 
 
 def logits_of(model, ids, vertical=False, **kw):
@@ -47,7 +48,7 @@ def test_init_equals_base_model(kind, vertical):
     ref = base_logits(base, ids)
     model = tiny_armt(kind, active_memory=False)
     out = logits_of(model, ids, vertical)
-    assert max_diff(out, ref) < tol_vs(ref), max_diff(out, ref)
+    assert max_diff(out, ref) < tol_vs(ref, kind), max_diff(out, ref)
 
 
 # --------------------------------------------------------------------------------------- 1. V == H
@@ -70,7 +71,7 @@ def test_memory_changes_outputs(kind):
     ids = random_ids(2, 16 * 3)
     ref = base_logits(base, ids)
     out = logits_of(model, ids)
-    assert max_diff(out[:, :16], ref[:, :16]) < tol_vs(ref)      # first segment: memory still empty
+    assert max_diff(out[:, :16], ref[:, :16]) < tol_vs(ref, kind)      # first segment: memory still empty
     assert max_diff(out[:, 16:], ref[:, 16:]) > 1e-3
 
 
@@ -114,6 +115,8 @@ def _signature(state):
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("in_stream", OPTIONS)
 def test_state_size_constant(kind, in_stream):
+    if kind in HYBRIDS:
+        pytest.skip("the KV caches of the attention layers grow: test_hybrid_state_size")
     model = tiny_armt(kind, mem_tokens_in_stream=in_stream)
     init = model.init_state(2)
     sig, nbytes = _signature(init), init.nbytes()
@@ -309,13 +312,15 @@ def test_state_dropout_same_in_both_orders(kind):
 @pytest.mark.parametrize("kind", KINDS)
 def test_state_reset_is_a_fresh_start_per_segment(kind):
     """state_reset with an empty memory (W_mv = 0) = the base model on every segment separately."""
+    if kind in HYBRIDS:
+        pytest.skip("the attention layers keep their KV caches: test_hybrid_state_reset_keeps_attention")
     base = tiny_base(kind)
     model = tiny_armt(kind, active_memory=False)
     model.state_reset = True
     ids = random_ids(2, 16 * 3)
     out = logits_of(model, ids)
     ref = torch.cat([base_logits(base, ids[:, s:s + 16]) for s in range(0, 48, 16)], dim=1)
-    assert max_diff(out, ref) < tol_vs(ref)
+    assert max_diff(out, ref) < tol_vs(ref, kind)
     model.state_reset = False
     assert max_diff(logits_of(model, ids), ref) > 1e-3        # without resets the state crosses the boundaries
 
@@ -330,14 +335,16 @@ def test_state_reset_leaves_only_the_memory_path(kind):
     model.zero_grad()
     g_none = _grad_to_first_segment(model, ids, detach_memory=True)[:, :S].abs().sum().item()
     print(f"{kind}: state reset: |dL/dx_seg0| memory {g_mem:.3e}, memory cut {g_none:.3e}")
-    assert g_mem > 0 and g_none == 0.0
+    assert g_mem > 0
+    assert g_none > 0 if kind in HYBRIDS else g_none == 0.0       # a hybrid still has its attention path
 
 
 # ------------------------------------------------------------------------------- other code paths
 @pytest.mark.parametrize("kind", KINDS)
 def test_unwrapped_layers(kind):
     """wrap_layers with memory only in some layers: the memory tokens still pass through the unwrapped blocks."""
-    wrap = [1 if i % 2 == 0 else 0 for i in range(tiny_armt(kind).backbone.num_layers)]
+    backbone = tiny_armt(kind).backbone
+    wrap = [1 if i % 2 == 0 and not backbone.is_attention(i) else 0 for i in range(backbone.num_layers)]
     model = tiny_armt(kind, wrap_layers=wrap)
     assert sorted(map(int, model.memory_layers.keys())) == [i for i, w in enumerate(wrap) if w]
     ids = random_ids(2, 16 * 3 + 5)
@@ -372,6 +379,8 @@ def test_last_position_logits(kind, vertical):
 @pytest.mark.parametrize("kind", KINDS)
 def test_last_position_logits_memory_does_not_grow(kind):
     """Inference with output_logits="last": the peak memory is the same for an 8x longer input."""
+    if kind in HYBRIDS:
+        pytest.skip("the KV caches of the attention layers grow")
     model = tiny_armt(kind)
 
     def peak(length):
@@ -449,3 +458,79 @@ def test_attention_cache_is_rejected_at_runtime():
         backbone.block(0, x, {}, None)
     block.forward = original
     backbone.block(0, x, {}, None)                  # and the unmodified block is accepted
+
+
+# ----------------------------------------------------------------------------------------------- hybrids
+HYBRID_KINDS = [k for k in KINDS if k in HYBRIDS]
+
+
+@pytest.mark.parametrize("kind", HYBRID_KINDS)
+def test_hybrid_memory_only_on_recurrent_layers(kind):
+    model = tiny_armt(kind)
+    n = model.backbone.num_layers
+    attention = [i for i in range(n) if model.backbone.is_attention(i)]
+    assert attention and sorted(map(int, model.memory_layers)) == [i for i in range(n) if i not in attention]
+    with pytest.raises(ValueError, match="recurrent layers only"):
+        tiny_armt(kind, wrap_layers=[1] * n)
+
+
+@pytest.mark.parametrize("kind", HYBRID_KINDS)
+@pytest.mark.parametrize("in_stream", OPTIONS)
+def test_hybrid_state_size(kind, in_stream):
+    """The recurrent part of the state has a constant size; the KV cache of an attention layer holds one entry per
+    real token (the memory tokens are a read-out branch) or per real and memory token (memory tokens in the stream)."""
+    model = tiny_armt(kind, mem_tokens_in_stream=in_stream)
+    attention = [model.backbone.is_attention(i) for i in range(model.backbone.num_layers)]
+    fixed = lambda st: _signature(ARMTState([layer for layer, a in zip(st.layers, attention) if not a]))
+    init = model.init_state(2)
+    assert all(r is None for (_, r), a in zip(init.layers, attention) if a)
+    M = model.config.num_mem_tokens
+    for length in (1, 16, 17, 100):
+        with torch.no_grad():
+            st = model(input_ids=random_ids(2, length), return_state=True).state
+        assert fixed(st) == fixed(init), length
+        expected = length + (M * (length // 16) if in_stream else 0)
+        for (_, kv), a in zip(st.layers, attention):
+            if a:
+                assert kv[0].shape[2] == kv[1].shape[2] == expected, (length, kv[0].shape)
+
+
+@pytest.mark.parametrize("kind", HYBRID_KINDS)
+def test_hybrid_state_reset_keeps_attention(kind):
+    """state_reset zeroes the recurrent states at every boundary; the attention layers still see the whole context:
+    the same as a base model whose GDN layers restart at every segment while its attention layers do not."""
+    model = tiny_armt(kind, active_memory=False)
+    ids = random_ids(2, 16 * 3)
+    model.state_reset = True
+    with torch.no_grad():
+        st = model(input_ids=ids, return_state=True).state
+    reset = logits_of(model, ids)
+    model.state_reset = False
+    assert max_diff(reset[:, :16], logits_of(model, ids)[:, :16]) <= ATOL      # the first segment is untouched
+    # reference: segment by segment, zeroing the recurrent states (only) in between
+    state, parts = None, []
+    for s in range(0, ids.shape[1], 16):
+        if state is not None:
+            state = ARMTState([(m, r if model.backbone.is_attention(i) else map_tensors(torch.zeros_like, r))
+                               for i, (m, r) in enumerate(state.layers)], state.position)
+        with torch.no_grad():
+            out = model(input_ids=ids[:, s:s + 16], state=state, return_state=True)
+        parts.append(out.logits)
+        state = out.state
+    assert max_diff(reset, torch.cat(parts, dim=1)) <= ATOL
+    assert all(st.layers[i][1][0].shape[2] == 48 for i in range(len(st.layers)) if model.backbone.is_attention(i))
+
+
+@pytest.mark.skipif(not CUDA, reason="CUDA kernels")
+@pytest.mark.parametrize("kind", HYBRID_KINDS)
+def test_hybrid_kernels_match_reference(kind):
+    """fla's chunked gated delta rule + causal_conv1d vs the step-by-step reference."""
+    model = tiny_armt(kind).train()
+    ids = random_ids(2, 16 * 3 + 3)
+    fast = _loss_and_grads(model, ids)
+    backbones.USE_KERNELS = False
+    try:
+        ref = _loss_and_grads(model, ids)
+    finally:
+        backbones.USE_KERNELS = True
+    print(f"{kind}: kernels vs reference max rel grad diff {_assert_same(ref, fast, 5e-3):.3e}")

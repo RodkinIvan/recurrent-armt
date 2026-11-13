@@ -33,7 +33,7 @@ from recurrent_armt.data import FinewebStream, validation_windows
 def get_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     # model
-    p.add_argument("--base_model", required=True, help="pretrained recurrent LM (fla RWKV-7 / HF Mamba / Mamba2 ...)")
+    p.add_argument("--base_model", required=True, help="pretrained recurrent LM (fla RWKV-7 / HF Mamba / Mamba2 / Qwen3.5 hybrid ...)")
     p.add_argument("--tokenizer", default=None, help="default: the base model's")
     p.add_argument("--init_from", default=None, help="an ARMT checkpoint (save_pretrained dir) to start from")
     p.add_argument("--segment_size", type=int, default=1024)
@@ -158,7 +158,7 @@ def main():
     sep = a.doc_sep_token_id
     if sep is None:
         cfg = PretrainedConfig.get_config_dict(a.init_from or a.base_model)[0]
-        cfg = cfg.get("base_model_config") or cfg
+        cfg = cfg.get("base_model_config") or cfg.get("text_config") or cfg     # text_config: vision-language checkpoints
         sep = cfg["bos_token_id"] if cfg.get("bos_token_id") is not None else cfg.get("eos_token_id")
     per_step = a.batch_size * a.grad_accum
     cooldown = a.cooldown or 2 * per_step

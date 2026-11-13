@@ -35,10 +35,22 @@ def tiny_base_config(kind: str) -> dict:
     if kind == "gdn2":
         return dict(model_type="gdn2_lm", vocab_size=VOCAB, hidden_size=128, num_hidden_layers=2, num_heads=2,
                     head_dim=64, intermediate_size=256)
+    if kind == "qwen3_5":
+        # hybrid: GDN, attention, GDN, GDN, attention; more value than key heads (as in Qwen3.5-9B+), partial RoPE
+        return dict(model_type="qwen3_5_text", vocab_size=VOCAB, hidden_size=64, intermediate_size=128,
+                    num_hidden_layers=5, layer_types=["linear_attention", "full_attention", "linear_attention",
+                                                      "linear_attention", "full_attention"],
+                    num_attention_heads=4, num_key_value_heads=2, head_dim=32, linear_num_key_heads=2,
+                    linear_num_value_heads=4, linear_key_head_dim=32, linear_value_head_dim=32, linear_conv_kernel_dim=4,
+                    rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "partial_rotary_factor": 0.5,
+                                     "mrope_section": [4, 2, 2], "mrope_interleaved": True},
+                    tie_word_embeddings=True)
     raise ValueError(kind)
 
 
-KINDS = ["mamba", "mamba2"] + (["rwkv7", "gated_deltanet", "gdn2"] if HAS_FLA else [])
+HYBRIDS = {"qwen3_5"}           # recurrent + attention layers: the KV caches grow, ARMT wraps the recurrent layers only
+# qwen3_5 runs its GDN through fla on GPU, the reference recurrence on CPU
+KINDS = ["mamba", "mamba2"] + (["qwen3_5"] if HAS_FLA or not CUDA else []) + (["rwkv7", "gated_deltanet", "gdn2"] if HAS_FLA else [])
 
 
 def tiny_base(kind: str, seed: int = 0) -> torch.nn.Module:

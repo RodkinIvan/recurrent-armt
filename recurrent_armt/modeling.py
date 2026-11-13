@@ -19,6 +19,11 @@ layer; "horizontal" in the original) or segments-first (``vertical_mode=True``: 
 all layers). Both compute the same thing. The state (``ARMTState``) has a fixed size; ``forward`` takes
 and returns it, so a sequence can be fed in pieces of any length (segment boundaries are kept at
 absolute positions) and generation is just forward over one token at a time.
+
+Hybrid backbones (recurrent + softmax-attention layers): only the recurrent layers get a memory. An
+attention layer is left as it is; its state is the KV cache of the tokens before (it grows with the
+sequence). The memory tokens pass through it like through a recurrent block: as a read-out branch they
+attend to the cache but are not added to it, so the real tokens see exactly what the base model sees.
 """
 from __future__ import annotations
 
@@ -83,7 +88,8 @@ class RecurrentARMTConfig(PretrainedConfig):
 class ARMTState:
     """Everything carried from one segment to the next: for every layer (associative memory (W, z) or
     None for an unwrapped layer, recurrent state of the block), and the number of tokens already seen
-    of the current, unfinished segment. Its size does not depend on the sequence length."""
+    of the current, unfinished segment. Its size does not depend on the sequence length (but for the KV caches of
+    the attention layers of a hybrid backbone)."""
     layers: list
     position: int = 0
 
@@ -140,8 +146,13 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
 
         n_layers, d_model = self.backbone.num_layers, self.backbone.hidden_size
         memory_dtype = DTYPES[config.memory_dtype]
-        wrap = config.wrap_layers if config.wrap_layers is not None else [1] * n_layers
+        # by default every recurrent layer; attention layers of hybrids stay as they are (no memory)
+        attention = [self.backbone.is_attention(i) for i in range(n_layers)]
+        wrap = config.wrap_layers if config.wrap_layers is not None else [int(not a) for a in attention]
         assert len(wrap) == n_layers, f"wrap_layers has {len(wrap)} entries for {n_layers} layers"
+        if any(w and a for w, a in zip(wrap, attention)):
+            raise ValueError(f"wrap_layers {wrap}: the associative memory goes on recurrent layers only, "
+                             f"attention layers are {[i for i, a in enumerate(attention) if a]}")
         self.memory = nn.Parameter(torch.empty(config.num_mem_tokens, d_model, dtype=memory_dtype))
         self.memory_layers = nn.ModuleDict({
             str(i): AssociativeMemory(d_model, config.d_mem, n_heads=config.n_heads, correction=config.correction,
@@ -186,8 +197,9 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
 
     @torch.no_grad()
     def init_state(self, batch_size: int, device: torch.device | None = None) -> ARMTState:
-        """Empty memories and zero recurrent states. The shapes / dtypes of the recurrent states are taken
-        from one token pushed through the blocks (call it under the autocast context that the model runs in)."""
+        """Empty memories and zero recurrent states (an empty KV cache, None, for attention layers). The shapes /
+        dtypes of the recurrent states are taken from one token pushed through the blocks (call it under the autocast
+        context that the model runs in)."""
         device = torch.device(device or self.memory.device)
         # The probe runs under no_grad: it must not fill autocast's weight-cast cache, or the rest of the step
         # would reuse those (gradient-free) bf16 weight copies and the backbone would get no weight gradients.
@@ -201,7 +213,7 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
                 hidden, aux, rnn_state = self.backbone.block(i, hidden, aux, None)
                 memory = self._memory_of(i)
                 layers.append((memory.init_state(batch_size, device) if memory is not None else None,
-                               map_tensors(torch.zeros_like, rnn_state)))
+                               None if self.backbone.is_attention(i) else map_tensors(torch.zeros_like, rnn_state)))
         return ARMTState(layers, position=0)
 
     # ------------------------------------------------------------------ core
@@ -263,9 +275,9 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
         masks = [torch.rand(batch_size, device=device) < p for _ in range(n_segments)]
         return masks if position == 0 else [None] + masks[1:]
 
-    @staticmethod
-    def _reset_rnn(state, mask):
-        if mask is None:
+    def _reset_rnn(self, i: int, state, mask):
+        """Zero the recurrent state of layer ``i`` for the samples in ``mask``; an attention layer keeps its KV cache."""
+        if mask is None or self.backbone.is_attention(i):
             return state
         mem_state, rnn_state = state
         reset = lambda t: torch.where(mask.view(-1, *[1] * (t.dim() - 1)), torch.zeros_like(t), t)
@@ -287,7 +299,7 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
                 masks = self._reset_masks(len(bounds), seg.shape[0], seg.device, state.position)
             real, mem = (seg, {}), self._mem_stream(seg.shape[0], seg.dtype, write)
             for i in range(self.backbone.num_layers):
-                real, mem, layers[i] = self._layer(i, real, mem, self._reset_rnn(layers[i], masks[k]))
+                real, mem, layers[i] = self._layer(i, real, mem, self._reset_rnn(i, layers[i], masks[k]))
             outputs = [real[0]] if last_only else outputs + [real[0]]
         return torch.cat(outputs, dim=1), ARMTState(layers, position)
 
@@ -300,7 +312,7 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
         layers = list(state.layers)
         for i in range(self.backbone.num_layers):
             for k in range(len(bounds)):
-                reals[k], mems[k], layers[i] = self._layer(i, reals[k], mems[k], self._reset_rnn(layers[i], masks[k]))
+                reals[k], mems[k], layers[i] = self._layer(i, reals[k], mems[k], self._reset_rnn(i, layers[i], masks[k]))
         return torch.cat([r[0] for r in reals], dim=1), ARMTState(layers, position)
 
     def forward(self,

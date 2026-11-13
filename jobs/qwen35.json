@@ -1,0 +1,51 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "qwen35_0.8b_armt",
+   "cmd": "export NCCL_P2P_DISABLE=1; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29561 train.py --base_model Qwen/Qwen3.5-0.8B-Base --out_dir outputs/{name} --max_steps 600 --batch_size 4 --grad_accum 4 --lr 1e-5 --memory_lr_mult 30 --warmup_steps 60 --eval_every 100 --save_every 100 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt",
+   "gpus": 2,
+   "gb": 50,
+   "expect": [
+    "outputs/qwen35_0.8b_armt/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2",
+    "mbz_nlp2.10"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "qwen35_0.8b_nomem",
+   "cmd": "export NCCL_P2P_DISABLE=1; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29562 train.py --base_model Qwen/Qwen3.5-0.8B-Base --out_dir outputs/{name} --max_steps 600 --batch_size 4 --grad_accum 4 --lr 1e-5 --memory_lr_mult 30 --warmup_steps 60 --eval_every 100 --save_every 100 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --num_mem_tokens 0",
+   "gpus": 2,
+   "gb": 50,
+   "expect": [
+    "outputs/qwen35_0.8b_nomem/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2",
+    "mbz_nlp2.10"
+   ],
+   "retries": 2
+  }
+ ]
+}

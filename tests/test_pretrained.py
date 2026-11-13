@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(not CUDA, reason="needs a GPU")
 
 GDN2 = "checkpoints/gdn2-370m-30B"          # scripts/convert_gdn2.py (not annealed GDN-2, 30B tokens)
 CHECKPOINTS = ["state-spaces/mamba-130m-hf", "AntonV/mamba2-130m-hf"] + (["fla-hub/rwkv7-191M-world"] if HAS_FLA else []) \
-    + ([GDN2] if HAS_FLA and os.path.exists(GDN2) else [])
+    + ([GDN2] if HAS_FLA and os.path.exists(GDN2) else []) + (["Qwen/Qwen3.5-0.8B-Base"] if HAS_FLA else [])   # hybrid
 N_NEW = 140
 
 
