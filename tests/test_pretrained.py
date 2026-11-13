@@ -108,5 +108,8 @@ def test_active_memory_equivalences(models, control):
     agree = (step_logits.argmax(-1) == full.argmax(-1)).float().mean().item()
     print(f"{name}: |H - V| = {max_diff(h, v):.3e} (bitwise {torch.equal(h, v)}), |gen - fwd| rel {gen:.2e} "
           f"(control {control:.2e}), argmax agree {agree:.4f}")
-    assert torch.equal(h, v)
+    if "Qwen3.5" in name:     # hybrid: layers-first runs each attention layer over all segments at once (other rounding)
+        assert max_diff(h, v) / scale < control
+    else:
+        assert torch.equal(h, v)
     assert gen < 3 * control and agree > 0.99

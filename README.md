@@ -67,8 +67,10 @@ An attention layer's "state" is the KV cache of all the tokens before (post-RoPE
 continues it at positions `past .. past + T - 1`, and that part of the state grows with the sequence. The
 memory tokens pass through attention like through any block: as a read-out branch they attend to the cache
 (at the positions right after the segment) but are not added to it, so the real tokens see exactly what the
-base model sees and ARMT at init is the base model. Layers-first and segments-first both work (bitwise
-equal), as do pieces and generation. State dropout / `state_reset` touch the GDN states only.
+base model sees and ARMT at init is the base model. Segments-first runs an attention layer segment by segment from its cache;
+layers-first runs it over all segments at once (one causal call for the real tokens, one masked call for all
+the memory tokens; `Qwen35Backbone.attention_layer`). Both give the same result up to rounding, as do pieces and
+generation. State dropout / `state_reset` touch the GDN states only.
 
     model = RecurrentARMTForCausalLM(RecurrentARMTConfig(base_model_name="Qwen/Qwen3.5-0.8B-Base", segment_size=1024))
 

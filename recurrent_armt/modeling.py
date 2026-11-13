@@ -311,9 +311,35 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
         masks = self._reset_masks(len(bounds), x.shape[0], x.device, state.position)
         layers = list(state.layers)
         for i in range(self.backbone.num_layers):
+            if self._whole_attention(i):
+                reals, mems, layers[i] = self._attention_layer(i, reals, mems, layers[i])
+                continue
             for k in range(len(bounds)):
                 reals[k], mems[k], layers[i] = self._layer(i, reals[k], mems[k], self._reset_rnn(i, layers[i], masks[k]))
         return torch.cat([r[0] for r in reals], dim=1), ARMTState(layers, position)
+
+    def _whole_attention(self, i: int) -> bool:
+        """Layers-first, an attention layer of a hybrid takes all segments at once (``Backbone.attention_layer``)
+        when the memory tokens are a read-out branch (in the stream they would enter the KV cache between segments)."""
+        return (self.backbone.is_attention(i) and not self.config.mem_tokens_in_stream
+                and hasattr(self.backbone, "attention_layer"))
+
+    def _attention_layer(self, i: int, reals: list, mems: list, state):
+        """Attention layer ``i`` over all segments: the real tokens in one causal call continuing the KV cache, the
+        memory tokens of all segments in one more (each reading the cache up to its segment's end). Equal to the
+        segment-by-segment ``_layer`` calls up to rounding (one softmax over the whole cache instead of per segment)."""
+        assert all(not r[1] for r in reals), "per-token aux streams are not supported in attention layers"
+        lengths = [r[0].shape[1] for r in reals]
+        ends = torch.tensor(lengths).cumsum(0).tolist()
+        readouts = [(mem[0], end) for mem, end in zip(mems, ends) if mem is not None]
+        args = (i, torch.cat([r[0] for r in reals], dim=1), state[1], readouts)
+        if self.gradient_checkpointing and self.training and torch.is_grad_enabled():
+            hidden, kv, outs = checkpoint(self.backbone.attention_layer, *args, use_reentrant=False)
+        else:
+            hidden, kv, outs = self.backbone.attention_layer(*args)
+        outs = iter(outs)
+        mems = [None if mem is None else (next(outs), {}) for mem in mems]
+        return [(h, {}) for h in hidden.split(lengths, dim=1)], mems, (state[0], kv)
 
     def forward(self,
                 input_ids: torch.LongTensor | None = None,

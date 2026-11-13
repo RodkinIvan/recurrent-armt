@@ -348,28 +348,66 @@ class Qwen35Backbone(Backbone):
         o = m.norm(o.to(v.dtype).reshape(-1, m.head_v_dim), z.reshape(-1, m.head_v_dim)).reshape(b, T, -1)
         return m.out_proj(o), (conv_state, S)
 
-    def _attention(self, m, x, kv):
-        from torch.nn.attention.bias import causal_lower_right
-        from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb, repeat_kv
+    def _project(self, m, x, positions):
+        """q, k (q / k norm, partial RoPE at ``positions`` [B, T]), v [B, heads, T, head_dim] and the output gate
+        [B, T, heads * head_dim] of attention module ``m`` for x [B, T, D]."""
+        from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb
         b, T, _ = x.shape
         q, gate = m.q_proj(x).view(b, T, -1, 2 * m.head_dim).chunk(2, dim=-1)
         q = m.q_norm(q).transpose(1, 2)
         k = m.k_norm(m.k_proj(x).view(b, T, -1, m.head_dim)).transpose(1, 2)
         v = m.v_proj(x).view(b, T, -1, m.head_dim).transpose(1, 2)
-        past = 0 if kv is None else kv[0].shape[2]
-        positions = torch.arange(past, past + T, device=x.device).expand(b, -1)
         q, k = apply_rotary_pos_emb(q, k, *self.inner.rotary_emb(x, positions))
         # under autocast RoPE (fp32 cos / sin) upcasts q, k: back to v's (the projections') dtype, as sdpa would cast
         # them, and the lower-right causal mask insists on one dtype
-        q, k = q.to(v.dtype), k.to(v.dtype)
+        return q.to(v.dtype), k.to(v.dtype), v, gate.reshape(b, T, -1)
+
+    @staticmethod
+    def _attend(m, q, k, v, gate, mask=None, is_causal=False):
+        from transformers.models.qwen3_5.modeling_qwen3_5 import repeat_kv
+        b, _, T, _ = q.shape
+        n_rep = m.num_key_value_groups
+        y = F.scaled_dot_product_attention(q.to(k.dtype), repeat_kv(k, n_rep), repeat_kv(v, n_rep), attn_mask=mask,
+                                           is_causal=is_causal, scale=m.scaling)
+        return m.o_proj(y.transpose(1, 2).reshape(b, T, -1) * torch.sigmoid(gate))
+
+    def _attention(self, m, x, kv):
+        from torch.nn.attention.bias import causal_lower_right
+        b, T, _ = x.shape
+        past = 0 if kv is None else kv[0].shape[2]
+        q, k, v, gate = self._project(m, x, torch.arange(past, past + T, device=x.device).expand(b, -1))
         if kv is not None:
             k, v = torch.cat([kv[0], k.to(kv[0].dtype)], dim=2), torch.cat([kv[1], v.to(kv[1].dtype)], dim=2)
-        n_rep = m.num_key_value_groups
         mask = None if past == 0 or T == 1 else causal_lower_right(T, past + T)   # the chunk sees everything before it
-        y = F.scaled_dot_product_attention(q.to(k.dtype), repeat_kv(k, n_rep), repeat_kv(v, n_rep), attn_mask=mask,
-                                           is_causal=past == 0 and T > 1, scale=m.scaling)
-        y = y.transpose(1, 2).reshape(b, T, -1) * torch.sigmoid(gate.reshape(b, T, -1))
-        return m.o_proj(y), (k, v)
+        return self._attend(m, q, k, v, gate, mask, is_causal=past == 0 and T > 1), (k, v)
+
+    def attention_layer(self, i, hidden, kv, readouts):
+        """Attention layer ``i`` (the whole decoder layer) for layers-first execution: the real tokens of all the
+        segments of a call at once, continuing the KV cache ``kv`` (one causal call), and the memory tokens of all
+        those segments in one more call. ``readouts`` = [(memory-token hidden [B, M, D], end)]: these memory tokens
+        attend to the cache up to ``end`` real tokens of this call and causally to themselves, at the positions right
+        after those tokens, and are not added to the cache. Returns (hidden, kv, [memory-token outputs]); the same as
+        ``block`` on each segment, each followed by its memory tokens from the cache after it (the read-out branch)."""
+        hidden, _, kv = self.block(i, hidden, {}, kv)
+        if not readouts:
+            return hidden, kv, []
+        layer, m = self.inner.layers[i], self.inner.layers[i].self_attn
+        mem = torch.cat([h for h, _ in readouts], dim=1)                          # [B, n M, D]
+        b, n_mem, device = mem.shape[0], mem.shape[1], mem.device
+        total = kv[0].shape[2]                                                    # cache after the real tokens
+        past = total - hidden.shape[1]
+        positions, mask, off = [], torch.zeros(n_mem, total + n_mem, dtype=torch.bool, device=device), 0
+        for h, end in readouts:
+            M = h.shape[1]
+            positions.append(torch.arange(past + end, past + end + M, device=device))
+            mask[off:off + M, :past + end] = True                                 # the cache up to its segment's end
+            mask[off:off + M, total + off:total + off + M] = torch.ones(M, M, dtype=torch.bool, device=device).tril()
+            off += M
+        q, k, v, gate = self._project(m, layer.input_layernorm(mem), torch.cat(positions).expand(b, -1))
+        k, v = torch.cat([kv[0], k.to(kv[0].dtype)], dim=2), torch.cat([kv[1], v.to(kv[1].dtype)], dim=2)
+        mem = mem + self._attend(m, q, k, v, gate, mask)
+        mem = mem + layer.mlp(layer.post_attention_layernorm(mem))
+        return hidden, kv, list(mem.split([h.shape[1] for h, _ in readouts], dim=1))
 
 
 # ------------------------------------------------------------------------------------------- loading
