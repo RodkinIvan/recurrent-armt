@@ -1,7 +1,8 @@
 # carmt: ARMT + Gated DeltaNet-2 in one CUDA file
 
 `armt.cu` is a from-scratch CUDA/C++ implementation of `recurrent_armt.RecurrentARMTForCausalLM` over a GDN-2 base model
-(`recurrent_armt/gdn2.py`: fla `GatedDeltaNet2` token mixer + SwiGLU MLP). It covers:
+(`recurrent_armt/gdn2.py`: fla `GatedDeltaNet2` token mixer + SwiGLU MLP), and over the hybrid Qwen3.5 (its Gated
+DeltaNet layers in C, its attention layers in PyTorch: see [Hybrid: Qwen3.5](#hybrid-qwen35)). It covers:
 - the forward pass with a carried fixed-size state (inference, streaming, generation);
 - the forward + backward pass for training.
 
@@ -19,7 +20,8 @@ summary: [reports/carmt_speedup.md](../reports/carmt_speedup.md). Raw outputs: [
 | `train_carmt.py` | runs the unchanged `train.py` with carmt: `torchrun ... carmt/train_carmt.py <train.py args>` |
 | `jobs/train_carmt.json` | router job: the `gdn2_370m_armt` run through `train_carmt.py` |
 | `build_env.sh` | installs a CUDA 12.6 toolkit into a separate prefix (the jobs' env has none) and builds |
-| `tests/test_carmt.py`, `tests/dist_check.py` | 48 GPU tests; DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs |
+| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 48 + 11 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
+| `qwen35_check.py` | Qwen3.5-0.8B-Base + ARMT: carmt vs HF / the original / the exact recurrence, fp32 and bf16 gradients |
 | `bench.py`, `profile_kernels.py`, `long_context.py`, `speedup_figure.py` | speed vs the original; per-kernel GPU time; memory vs context length; the report figure |
 
 ## Use
@@ -43,8 +45,8 @@ out = model(input_ids=x, return_state=True)    # ARMTState, interchangeable with
 - **How it works.** The launcher patches the model class so that every instance gets `carmt.accelerate()` before `train.py`
   moves it to the GPU and wraps it in DDP. It builds missing libraries once, under a file lock.
 - **Precision.** `CARMT_SCAN_FP32=1` selects the fp32-scan build.
-- **Checkpointing.** Gradient-checkpointing flags have no effect: the C backward always recomputes each (layer, segment)
-  from its stored input.
+- **Checkpointing.** The C backward always recomputes each (layer, segment) from its stored input, whatever the flags. On a
+  hybrid, the model's gradient-checkpointing flag also checkpoints the attention layers (PyTorch), as the original does.
 
 **Other entry points.**
 - Without patching: `runner = carmt.CARMT(model); runner(input_ids=..., labels=..., state=..., return_state=...)`.
@@ -110,6 +112,63 @@ shape at once, the first one written wins and both use it. The lock is never hel
   - frozen parameters: their gradient work is skipped.
 - **Falls back to the PyTorch forward** for `inputs_embeds`, and for grad-enabled calls that have no labels, pass a state, or
   ask for logits / a state.
+
+## Hybrid: Qwen3.5
+
+`carmt.accelerate(model)` / `CARMT(model)` on a `RecurrentARMTForCausalLM` over Qwen3.5 (HF `Qwen3_5ForCausalLM`, e.g.
+Qwen3.5-0.8B-Base: 18 Gated DeltaNet + 6 gated-attention layers) run the Gated DeltaNet layers, their MLPs and memories,
+the embeddings and the loss in C, and the attention layers in PyTorch, through the backbone's own
+`Qwen35Backbone.attention_layer` (PyTorch's flash attention for the real tokens, one masked call for all memory tokens).
+
+- **Layer-major.** A call runs layer by layer over all its segments (`armt_hy_begin / run / head`): each run of
+  consecutive recurrent layers is one C call over all segments; the hidden streams go to the attention layer between them
+  as the real tokens `[B, T, D]` and the memory tokens of the segment-ending pieces `[B, nw, M, D]`. In training every run
+  and the loss head are autograd nodes (`armt_hy_run_bwd`, `armt_hy_head_bwd`), the attention layers ordinary PyTorch ops in
+  between, so DDP / ZeRO and the gradients work as for GDN-2.
+- **The Gated DeltaNet in C** is the GDN-2 machinery with one gate and one beta per head (scalar mode of the token-prep
+  kernels; the chunked scan is unchanged) and `(1 + w)` RMSNorms. The four input projections are one packed GEMM.
+- **State.** `ARMTState` as the original's: the attention layers' entries are their KV caches; inference with a state,
+  pieces, and generation go through the same path.
+- **Memory.** With gradient checkpointing on (as `train.py` runs), the attention layers are recomputed in the backward;
+  `CARMT_ATTN_CKPT=0` keeps their activations instead (faster, about twice the memory).
+- **Supported:** as many value as key heads in the GDN (Qwen3.5-0.8B; the larger Qwen3.5 models have more value heads and
+  fall outside), head dim 64 or 128, conv 4, `mem_tokens_in_stream=False`.
+
+**Equivalence** (`tests/test_hybrid.py`, `qwen35_check.py`; records `records/tests_hybrid_rtx5880.log`,
+`records/qwen35_check_rtx5880.log`):
+
+| check | result |
+|---|---|
+| tiny Qwen3.5 (layer patterns ending / starting with attention), fp32, vs the exact recurrence | logits ≤ 1e-4, every gradient ≤ 3e-4 |
+| Qwen3.5-0.8B-Base + ARMT, fp32 logits vs the exact token-by-token recurrence, 2 × 2048 tokens | carmt 2.8e-6; the original with fla's chunk kernel 1.8e-3 (HF itself is 1.8e-3 off too) |
+| 0.8B bf16 training step, every gradient vs fp32 | median error 0.84× the original's own bf16 error |
+| pieces == whole, state interchangeable with the original, generation == forward, state dropout | ≤ 1e-4 |
+| DDP (+ accumulation, `no_sync`), ZeRO-1, ZeRO-2, tiny hybrid, fp32, vs the exact reference | ≤ 9e-5 (`records/dist_check_qwen35_2x_rtx5880.log`) |
+| DDP and ZeRO-2, Qwen3.5-0.8B, bf16, vs single-process carmt averaged over the ranks' batches | ≤ 3e-7 |
+
+Two properties of the PyTorch side show up at this precision, the same for the original:
+- PyTorch's flash / memory-efficient attention backward is not deterministic: two identical bf16 steps differ by up to ~2e-2
+  on the most cancellation-prone gradients (`dist_check` runs the 0.8B comparison on the deterministic math backend).
+- Running `backward()` inside the `torch.autocast` block changes the attention layers' bf16 gradients by ~2e-3 relative
+  (median) against running it outside, as `train.py` and DeepSpeed's engine do; carmt's C part is unaffected.
+
+The chunked scan's fp32 gate gradients (`A_log`, `dt_bias`, `in_proj_a`) lose precision at very fast decays: with
+`A = exp(A_log)` near 16 (the top of HF's init range, ~e^-20 per token) they are ~1e-3 off the exact recurrence, ~1e-5 at
+A = 4. The tests draw A in [0.01, 4]; Qwen3.5-0.8B has A in [0.001, 10.6], median 0.27.
+
+**Speed** (RTX 5880 Ada, bf16, batch 4 × 8192 tokens = 8 segments of 1024, 32 memory tokens; the original layers-first with
+flash attention, as in `train.py`; `records/bench_rtx5880_qwen35_bf16.json`):
+
+| workload | original | carmt | speedup |
+|---|---|---|---|
+| training step, gradient checkpointing (as `train.py`) | 5.14 s, 23.2 GB | 3.60 s, 18.3 GB | 1.43× |
+| training step, `CARMT_ATTN_CKPT=0` (the original does not fit without checkpointing) | 5.14 s, 23.2 GB | 3.18 s, 35.4 GB | 1.61× |
+| inference with loss | 1.26 s | 0.95 s | 1.33× |
+| generation (batch 1, 1k-token prompt + 64 tokens) | 22.6 ms/token | 6.65 ms/token | 3.40× |
+
+Where a training step goes (`records/phases_rtx5880_qwen35_train.log`): the C backward of the recurrent layers ~43%, the
+248k-vocabulary loss head ~20% (about 50 TFLOP of GEMMs per step, the same in both implementations), the C forward of the
+recurrent layers ~13%, the attention layers (PyTorch) and the rest ~20%.
 
 ## How it works
 

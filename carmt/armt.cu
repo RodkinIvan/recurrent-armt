@@ -2507,7 +2507,9 @@ static void head(Ctx* c, const Step& s, const float* x, int start, int T, const 
     if (logits && logits_last && is_last_piece)
         mm(c, 0, 1, 1, V, D, 1.f, hf + (long)(s.Tr - 1) * D, CUDA_X, D, (long long)s.Tr * D, c->w_lm, CUDA_X, D, 0, 0.f, logits, F32, V, V, s.B);
     if (labels && (dxo || !logits || logits_last)) {
-        int LC = 4096;
+        // rows per logits chunk: 4096, fewer for a large vocabulary (the chunk buffer stays <= 512 MB: 1024 rows at 248k)
+        int LC = (int)(((256L << 20) / V) & ~255L);
+        LC = LC > 4096 ? 4096 : (LC < 256 ? 256 : LC);
         floatX* lg = BF(c, B_LOGITS, floatX, (long)LC * V);
         floatX* dhf = dxo ? BF(c, B_DHF, floatX, (long)R * D) : NULL;
         for (int r0 = 0; r0 < R; r0 += LC) {

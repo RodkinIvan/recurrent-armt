@@ -1,13 +1,15 @@
 """carmt under DDP and DeepSpeed ZeRO-1 / ZeRO-2 (2 GPUs):
 
     torchrun --nproc_per_node 2 carmt/tests/dist_check.py [--ckpt checkpoints/gdn2-370m-30B]
+    torchrun --nproc_per_node 2 carmt/tests/dist_check.py --model qwen35 [--ckpt Qwen/Qwen3.5-0.8B-Base]   (hybrid)
 
 Each rank trains on its own half of a batch. Checked:
   A. tiny model, fp32: the averaged gradients of every wrapper (DDP; DDP with gradient accumulation, with and without
      no_sync; ZeRO-1; ZeRO-2) == the exact PyTorch reference averaged over the two halves; after optimizer steps the ranks
      hold identical parameters and the C forward sees them.
   B. GDN-2 370M, bf16 (if --ckpt exists): DDP / ZeRO-2 gradients == single-process carmt gradients averaged over the halves
-     (same library both sides: only the all-reduce summation order differs).
+     (same library both sides: only the all-reduce summation order differs). --model qwen35: Qwen3.5-0.8B (if in the HF
+     cache), attention layers on PyTorch's deterministic math backend.
 Prints one line per check; exits non-zero on the first failure.
 """
 import argparse
@@ -26,6 +28,8 @@ import carmt  # noqa: E402
 from reference import exact_gdn2, rel  # noqa: E402
 from test_carmt import ids_of, make  # noqa: E402
 
+VOCAB_B, NAME_B = 32000, "370M"   # part B: random token range, model name (set by --model)
+
 
 def log(msg):
     if dist.get_rank() == 0:
@@ -40,10 +44,16 @@ def check(name, ok, detail=""):
         sys.exit(1)
 
 
-def grads_of(model, fwd, batches, scale=1.0):
+def grads_of(model, fwd, batches, scale=1.0, amp=None):
+    """Gradients of the batches' losses: the forward under ``amp`` (an autocast factory) if given, the backward outside it,
+    as train.py and DeepSpeed's engine do (PyTorch ops can differ when their backward runs inside autocast: the hybrid's
+    attention layers do, by ~2e-3 relative in bf16)."""
+    import contextlib
     model.zero_grad(set_to_none=True)
     for ids in batches:
-        (fwd(input_ids=ids, labels=ids).loss * scale).backward()
+        with (amp() if amp else contextlib.nullcontext()):
+            loss = fwd(input_ids=ids, labels=ids).loss * scale
+        loss.backward()
     return {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
 
 
@@ -138,15 +148,14 @@ def part_b(ckpt):
             memory.W_mv.weight.normal_(std=0.02)
     m0.train()
     gen = torch.Generator().manual_seed(1)
-    halves = [torch.randint(3, 32000, (2, 2048), generator=gen).cuda() for _ in range(world)]
-    amp = torch.autocast("cuda", dtype=torch.bfloat16)
+    halves = [torch.randint(3, VOCAB_B, (2, 2048), generator=gen).cuda() for _ in range(world)]
+    amp = lambda: torch.autocast("cuda", dtype=torch.bfloat16)
 
     def single(model):      # single-process carmt gradients averaged over the halves
         r = carmt.CARMT(model)
         acc = None
         for ids in halves:
-            with amp:
-                g = grads_of(model, r, [ids])
+            g = grads_of(model, r, [ids], amp=amp)
             acc = g if acc is None else {n: acc[n] + g[n] for n in acc}
         return {n: v / world for n, v in acc.items()}
 
@@ -155,10 +164,9 @@ def part_b(ckpt):
     m = copy.deepcopy(m0)
     carmt.accelerate(m)
     ddp = torch.nn.parallel.DistributedDataParallel(m, device_ids=[torch.cuda.current_device()])
-    with amp:
-        g = grads_of(m, ddp, [halves[rank]])
+    g = grads_of(m, ddp, [halves[rank]], amp=amp)
     e = max(rn(g[n], ref[n]) for n in ref)
-    check("DDP bf16 370M: gradients == single-process carmt average", e < 1e-5, f"(worst rel-norm {e:.1e})")
+    check(f"DDP bf16 {NAME_B}: gradients == single-process carmt average", e < 1e-5, f"(worst rel-norm {e:.1e})")
     import deepspeed
     from deepspeed.utils import safe_get_full_grad
     m = copy.deepcopy(m0)
@@ -177,19 +185,38 @@ def part_b(ckpt):
     errs = {n: rn(safe_get_full_grad(p), ref[n]) for n, p in m.named_parameters()}
     e = max(errs.values())
     worst_n = max(errs, key=errs.get)
-    check("ZeRO-2 bf16 370M: gradients == single-process carmt average", e < 1e-5, f"(worst rel-norm {e:.1e} {worst_n})")
+    check(f"ZeRO-2 bf16 {NAME_B}: gradients == single-process carmt average", e < 1e-5, f"(worst rel-norm {e:.1e} {worst_n})")
 
 
 def main():
+    global make, ids_of, exact_gdn2, VOCAB_B, NAME_B
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt", default="checkpoints/gdn2-370m-30B")
+    p.add_argument("--model", default="gdn2", choices=["gdn2", "qwen35"])
+    p.add_argument("--ckpt", default=None, help="part B: a GDN-2 checkpoint dir / a Qwen3.5 HF name (skipped if absent)")
     a = p.parse_args()
+    if a.model == "qwen35":   # the hybrid: tiny Qwen3.5 vs its exact recurrence; part B on Qwen3.5-0.8B-Base
+        import test_hybrid
+        make, ids_of, exact_gdn2 = test_hybrid.make, test_hybrid.ids_of, test_hybrid.exact
+        VOCAB_B, NAME_B = 248000, "Qwen3.5-0.8B"
+        ckpt = a.ckpt or "Qwen/Qwen3.5-0.8B-Base"
+        from huggingface_hub import try_to_load_from_cache
+        run_b = os.path.isdir(ckpt) or isinstance(try_to_load_from_cache(ckpt, "config.json"), str)   # cached locally
+    else:
+        ckpt = a.ckpt or "checkpoints/gdn2-370m-30B"
+        run_b = os.path.exists(ckpt)
     dist.init_process_group("nccl")
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    log(f"world {dist.get_world_size()} | {torch.cuda.get_device_name()} | NCCL_P2P_DISABLE={os.environ.get('NCCL_P2P_DISABLE')}")
+    log(f"world {dist.get_world_size()} | {torch.cuda.get_device_name()} | NCCL_P2P_DISABLE={os.environ.get('NCCL_P2P_DISABLE')}"
+        f" | model {a.model}")
     part_a()
-    if os.path.exists(a.ckpt):
-        part_b(a.ckpt)
+    if run_b:
+        if a.model == "qwen35":
+            # the attention layers run in PyTorch: its flash / memory-efficient attention backward is not deterministic
+            # (two identical single-process steps differ by up to ~2e-2 on the most cancellation-prone gradients); the
+            # math backend is, so this comparison isolates the gradient reduction, as for GDN-2
+            torch.backends.cuda.enable_flash_sdp(False)
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+        part_b(ckpt)
     log("ALL DISTRIBUTED CHECKS PASSED")
     dist.destroy_process_group()
 

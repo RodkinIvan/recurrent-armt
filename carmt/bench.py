@@ -89,6 +89,11 @@ def main():
         report("train/carmt", timed(step(runner), iters=a.iters))
         res["train/carmt"]["peak_gb"] = torch.cuda.max_memory_allocated() / 2**30
         model.gradient_checkpointing_enable()
+        if runner.hybrid:   # with checkpointing on, carmt recomputes the (PyTorch) attention layers too, as train.py runs it
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            report("train/carmt_ckpt", timed(step(runner), iters=a.iters))
+            res["train/carmt_ckpt"]["peak_gb"] = torch.cuda.max_memory_allocated() / 2**30
         torch.cuda.reset_peak_memory_stats()
         report("train/original_ckpt", timed(step(model), warmup=1, iters=max(2, a.iters // 2)))
         res["train/original_ckpt"]["peak_gb"] = torch.cuda.max_memory_allocated() / 2**30

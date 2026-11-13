@@ -741,7 +741,15 @@ class CARMT:
     def _hy_attention(self, call, i, real, mem, kv):
         """Attention layer i (PyTorch, the backbone's layers-first path) on the real tokens and the segment-ending memory tokens."""
         readouts = [(mem[:, w], start + tr) for w, (start, tr, tm) in enumerate([p for p in call.pieces if p[2]])]
-        real, kv, outs = self.model.backbone.attention_layer(i, real, kv, readouts)
+        m = self.model
+        # as the original: recomputed in the backward when the model checkpoints. CARMT_ATTN_CKPT=0 keeps the attention
+        # layers' activations instead (faster: Qwen3.5-0.8B, batch 4 x 8192: 3.2 vs 3.6 s per step, 36 vs 18 GB peak)
+        ckpt = os.environ.get("CARMT_ATTN_CKPT", "1") != "0"
+        if ckpt and m.gradient_checkpointing and m.training and torch.is_grad_enabled():
+            from torch.utils.checkpoint import checkpoint
+            real, kv, outs = checkpoint(m.backbone.attention_layer, i, real, kv, readouts, use_reentrant=False)
+        else:
+            real, kv, outs = m.backbone.attention_layer(i, real, kv, readouts)
         mem = torch.stack(outs, dim=1) if outs else mem
         return real, mem, kv
 
