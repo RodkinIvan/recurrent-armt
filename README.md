@@ -14,6 +14,7 @@ state can cross the boundary for free, so here the state handed from segment to 
 * the recurrent state of the block (RWKV-7 wkv state + token-shift states, Mamba conv + SSM states, ...).
 
 Both are fixed-size and differentiable: gradients from later segments reach earlier ones through both.
+(Hybrid backbones add the KV caches of their attention layers, which grow with the sequence; see below.)
 
 ## Layout
 
@@ -38,9 +39,9 @@ cfg = RecurrentARMTConfig(base_model_name="fla-hub/rwkv7-0.4B-g1a",   # or Anton
                           segment_size=1024, num_mem_tokens=32, d_mem=64)
 model = RecurrentARMTForCausalLM(cfg)
 out = model(input_ids=ids, labels=ids)                 # loss (logits only when asked / no labels)
-out = model(input_ids=ids, return_state=True)          # .logits, .state  (ARMTState: fixed size)
+out = model(input_ids=ids, return_state=True)          # .logits, .state  (ARMTState: fixed size, but for hybrids' KV caches)
 out = model(input_ids=more_ids, state=out.state)       # continue the same sequence (any piece length)
-new_tokens = model.generate(prompt_ids, max_new_tokens=100)   # O(1) per token on the state
+new_tokens = model.generate(prompt_ids, max_new_tokens=100)   # O(1) per token on the state (hybrids: O(length), attention)
 model.vertical_mode = True                             # segments-first execution; default layers-first
 model.gradient_checkpointing_enable()                  # checkpoint every (layer, segment) block call
 ```

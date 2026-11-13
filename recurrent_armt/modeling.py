@@ -16,7 +16,8 @@ state after the memory tokens instead (one block call per segment instead of two
 
 The model can run layers-first (``vertical_mode=False``: every layer over all segments, then the next
 layer; "horizontal" in the original) or segments-first (``vertical_mode=True``: every segment through
-all layers). Both compute the same thing. The state (``ARMTState``) has a fixed size; ``forward`` takes
+all layers). Both compute the same thing. The state (``ARMTState``) has a fixed size (for a hybrid backbone: but for
+the KV caches of its attention layers, below); ``forward`` takes
 and returns it, so a sequence can be fed in pieces of any length (segment boundaries are kept at
 absolute positions) and generation is just forward over one token at a time.
 
@@ -287,7 +288,7 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
         """Segments first: each segment goes through all layers before the next segment starts.
         ``x`` is the embedded input [B, L, D], or a function (start, end) -> the embedded slice (then ``length`` is
         L): with ``last_only`` the hidden states of all but the last segment are dropped as soon as the state has
-        been carried forward, so memory does not grow with the sequence length."""
+        been carried forward, so memory does not grow with the sequence length (except for the KV caches of a hybrid)."""
         take = x if callable(x) else (lambda start, end: x[:, start:end])
         length = x.shape[1] if length is None else length
         bounds, position = self._segments(length, state.position)
@@ -366,7 +367,7 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
             state = self.init_state(source.shape[0], source.device)
         if output_logits == "last" and labels is None:
             # only the last position is needed: segments-first, embedding one segment at a time and keeping only
-            # the last segment's hidden states -> memory independent of the sequence length (same result: H == V)
+            # the last segment's hidden states -> memory independent of the sequence length but for a hybrid's KV caches (same result: H == V)
             take = (lambda s, e: self.backbone.embed(input_ids[:, s:e])) if inputs_embeds is None else inputs_embeds
             hidden, state = self._run_vertical(take, state, length=source.shape[1], last_only=True)
         else:
@@ -413,7 +414,8 @@ class RecurrentARMTForCausalLM(PreTrainedModel):
     def generate(self, input_ids: torch.LongTensor, max_new_tokens: int = 1, eos_token_id: int | list[int] | None = None,
                  do_sample: bool = False, temperature: float = 1.0, top_k: int | None = None,
                  return_logits: bool = False, state: ARMTState | None = None, attention_mask=None, **kwargs):
-        """Decode token by token on top of the fixed-size state (O(1) work per token; the memory tokens are
+        """Decode token by token on top of the fixed-size state (O(1) work per token; for a hybrid, attention over its KV
+        caches is O(length) per token and each step copies the caches: quadratic overall. The memory tokens are
         processed whenever a segment is completed). Returns only the new tokens, like the original ARMT,
         and the logits they were chosen from if ``return_logits``. A sample that has emitted an EOS token
         keeps emitting that token; decoding stops when every sample has finished."""
