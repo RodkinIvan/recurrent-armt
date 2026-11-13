@@ -359,6 +359,9 @@ class Qwen35Backbone(Backbone):
         past = 0 if kv is None else kv[0].shape[2]
         positions = torch.arange(past, past + T, device=x.device).expand(b, -1)
         q, k = apply_rotary_pos_emb(q, k, *self.inner.rotary_emb(x, positions))
+        # under autocast RoPE (fp32 cos / sin) upcasts q, k: back to v's (the projections') dtype, as sdpa would cast
+        # them, and the lower-right causal mask insists on one dtype
+        q, k = q.to(v.dtype), k.to(v.dtype)
         if kv is not None:
             k, v = torch.cat([kv[0], k.to(kv[0].dtype)], dim=2), torch.cat([kv[1], v.to(kv[1].dtype)], dim=2)
         n_rep = m.num_key_value_groups
