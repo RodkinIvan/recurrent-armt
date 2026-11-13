@@ -1,7 +1,10 @@
-"""Streaming pre-training windows from karpathy/fineweb-edu-100b-shuffle (nothing is downloaded up front).
+"""Streaming pre-training windows from parquet corpora on the Hub (nothing is downloaded up front):
+karpathy/fineweb-edu-100b-shuffle, optionally mixed with long mathematical texts (``SOURCES``).
 
-Units. The corpus is 1823 parquet shards x ~52 row groups x 1024 documents; a row group is the unit read
-remotely (~1.8 MB, ~1M tokens). The last shard is held out for validation.
+Units. A row group of a parquet file is the unit read remotely. fineweb-edu: 1823 shards x ~52 row groups x
+1024 documents (~1M tokens each), the last shard held out for validation. A mix (``mix={source: units per
+chunk}``) takes that many row groups of every source into each chunk, so the token shares are set by the
+unit counts (``stats`` reports the actual tokens per source).
 
 Shuffling. All training units are put in one seeded random order and dealt to the data-parallel ranks
 (unit k -> rank k % world), so ranks never share a document. A rank consumes its units in chunks of
@@ -21,25 +24,90 @@ and skips ahead, so a resumed run sees exactly the windows it would have seen.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing as mp
 import os
 import time
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 META_FILE = Path(__file__).with_name("fineweb_edu_100b_shuffle.json")
+MATH_META_FILE = Path(__file__).with_name("math_sources.json")       # scripts/source_meta.py
 VAL_SHARD = "shard_01822.parquet"
+
+
+@dataclass(frozen=True)
+class Source:
+    """A parquet corpus: ``files`` maps each file to its number of row groups. A document is its ``columns``
+    joined by blank lines. Validation: the file ``val_file`` (never trained on), or, with ``holdout_column``,
+    the documents whose value in that column hashes into the held-out 2% (in every file; training skips them):
+    OpenMathReasoning has ~10 solutions per problem in different files, so a held-out file would not hold
+    its problems out."""
+    name: str
+    repo: str
+    files: tuple[tuple[str, int], ...]
+    val_file: str | None = None
+    columns: tuple[str, ...] = ("text",)
+    holdout_column: int | None = None          # index into columns
+    min_doc_tokens: int = 0
+
+    def units(self) -> list[tuple[str, int]]:
+        return [(f, g) for f, n in self.files if f != self.val_file for g in range(n)]
+
+    def val_units(self) -> list[tuple[str, int]]:
+        if self.holdout_column is None:
+            return [(self.val_file, g) for g in range(dict(self.files)[self.val_file])]
+        return [(f, g) for f, n in self.files for g in range(n)]
+
+    def texts(self, rows: list, split: str = "train") -> list[str]:
+        if len(self.columns) == 1:
+            return rows
+        if self.holdout_column is not None:
+            rows = [r for r in rows if held_out(r[self.holdout_column]) == (split == "val")]
+        return ["\n\n".join(r) for r in rows]
+
+
+def held_out(key: str, percent: int = 2) -> bool:
+    return int(hashlib.md5(key.encode()).hexdigest()[:8], 16) % 100 < percent
+
+
+def _sources() -> dict[str, Source]:
+    meta = json.loads(META_FILE.read_text())
+    out = {"fineweb": Source("fineweb", meta["repo"], tuple(meta["num_row_groups"].items()), val_file=VAL_SHARD)}
+    if MATH_META_FILE.exists():
+        math = json.loads(MATH_META_FILE.read_text())
+        # long arXiv papers (LaTeX, math score >= 0.6; median ~15k tokens), held out by file
+        out["arxiv"] = Source("arxiv", math["arxiv"]["repo"], tuple(math["arxiv"]["num_row_groups"].items()),
+                              val_file=math["arxiv"]["val_file"])
+        # long chain-of-thought solutions (median ~7k tokens), only those of >= 8192 tokens, held out by problem
+        out["omr"] = Source("omr", math["omr"]["repo"], tuple(math["omr"]["num_row_groups"].items()),
+                            columns=tuple(math["omr"]["columns"]), holdout_column=0, min_doc_tokens=8192)
+    return out
+
+
+SOURCES = _sources()
+
+
+def parse_mix(spec: str | None, units_per_chunk: int = 16) -> dict[str, int]:
+    """"fineweb:4,arxiv:1,omr:2" -> {source: row groups per chunk}; None -> fineweb only."""
+    if not spec:
+        return {"fineweb": units_per_chunk}
+    mix = {name: int(k) for name, k in (part.split(":") for part in spec.split(","))}
+    unknown = set(mix) - set(SOURCES)
+    assert not unknown, f"unknown sources {unknown} (known: {sorted(SOURCES)})"
+    return mix
 
 # ------------------------------------------------------------------------------------- reading / tokenizing
 _fs = None
 
 
-def read_unit(repo: str, shard: str, row_group: int, retries: int = 8) -> list[str]:
-    """The texts of one row group, read remotely (with retries)."""
+def read_unit(repo: str, shard: str, row_group: int, columns: tuple[str, ...] = ("text",), retries: int = 8) -> list:
+    """The texts of one row group, read remotely (with retries); several columns: tuples."""
     global _fs
     import pyarrow.parquet as pq
     from huggingface_hub import HfFileSystem
@@ -48,7 +116,9 @@ def read_unit(repo: str, shard: str, row_group: int, retries: int = 8) -> list[s
             if _fs is None:
                 _fs = HfFileSystem()
             with _fs.open(f"datasets/{repo}/{shard}", block_size=4 << 20) as f:
-                return pq.ParquetFile(f).read_row_group(row_group, columns=["text"]).column("text").to_pylist()
+                table = pq.ParquetFile(f).read_row_group(row_group, columns=list(columns))
+            cols = [table.column(c).to_pylist() for c in columns]
+            return cols[0] if len(columns) == 1 else list(zip(*cols))
         except Exception:                                       # network hiccups
             if attempt == retries - 1:
                 raise
@@ -143,15 +213,14 @@ def constrained_order(first: np.ndarray, last: np.ndarray, cooldown: int, rng: n
 
 
 # ----------------------------------------------------------------------------------------------- stream
-class FinewebStream:
+class PretrainStream:
     def __init__(self, tokenizer, window: int, doc_sep_token_id: int | None, rank: int = 0, world_size: int = 1,
-                 seed: int = 0, units_per_chunk: int = 16, cooldown: int = 64, min_doc_tokens: int = 0,
+                 seed: int = 0, mix: dict[str, int] | None = None, cooldown: int = 64, min_doc_tokens: int = 0,
                  num_proc: int = 4, io_threads: int = 8):
-        meta = json.loads(META_FILE.read_text())
-        self.repo = meta["repo"]
-        self.units = [(s, g) for s, n in meta["num_row_groups"].items() if s != VAL_SHARD for g in range(n)]
+        self.mix = dict(mix or {"fineweb": 16})
+        self.sources = [SOURCES[name] for name in self.mix]
         self.window, self.sep, self.rank, self.world, self.seed = window, doc_sep_token_id, rank, world_size, seed
-        self.units_per_chunk, self.cooldown, self.min_doc_tokens = units_per_chunk, cooldown, min_doc_tokens
+        self.cooldown, self.min_doc_tokens = cooldown, min_doc_tokens
         # a HF tokenizer name (tokenized in a process pool) or any callable: list[str] -> list[np.ndarray]
         self.tokenizer = Tokenizer(tokenizer, num_proc) if isinstance(tokenizer, str) else tokenizer
         self.io = ThreadPoolExecutor(io_threads)
@@ -161,20 +230,41 @@ class FinewebStream:
         self._next = None
 
     # -- deterministic content
-    def chunk_units(self, c: int) -> list[tuple[str, int]]:
-        per_rank = len(self.units) // self.world
-        per_epoch = per_rank // self.units_per_chunk
-        epoch, c = divmod(c, per_epoch)
-        perm = np.random.default_rng([self.seed, epoch]).permutation(len(self.units))
-        mine = perm[self.rank::self.world][:per_rank]
-        return [self.units[i] for i in mine[c * self.units_per_chunk:(c + 1) * self.units_per_chunk]]
+    def chunk_units(self, c: int) -> list[tuple[str, str, int]]:
+        """(source, file, row group) of chunk ``c``: per source, its own seeded order of its units dealt to the ranks
+        (the first source's order is keyed by (seed, epoch) alone: a fineweb-only stream is the one it always was)."""
+        out = []
+        for i, (src, k) in enumerate(zip(self.sources, self.mix.values())):
+            units = src.units()
+            per_rank = len(units) // self.world
+            epoch, cc = divmod(c, per_rank // k)
+            perm = np.random.default_rng([self.seed, epoch] + ([i] if i else [])).permutation(len(units))
+            mine = perm[self.rank::self.world][:per_rank]
+            out += [(src.name, *units[j]) for j in mine[cc * k:(cc + 1) * k]]
+        return out
+
+    def _read(self, unit):
+        src = SOURCES[unit[0]]
+        return src.texts(read_unit(src.repo, unit[1], unit[2], src.columns) if len(src.columns) > 1
+                         else read_unit(src.repo, unit[1], unit[2]))
 
     def build_chunk(self, c: int) -> tuple[np.ndarray, Counter]:
-        texts = [t for unit in self.io.map(lambda u: read_unit(self.repo, *u), self.chunk_units(c)) for t in unit]
-        docs = [d for d in self.tokenizer(texts) if len(d) >= self.min_doc_tokens]
+        units = self.chunk_units(c)
+        per_unit = list(self.io.map(self._read, units))
+        tokens = self.tokenizer([t for texts in per_unit for t in texts])
+        docs, stats, pos = [], Counter(), 0
+        for (name, *_), texts in zip(units, per_unit):
+            least = max(self.min_doc_tokens, SOURCES[name].min_doc_tokens)
+            kept = [d for d in tokens[pos:pos + len(texts)] if len(d) >= least]
+            pos += len(texts)
+            docs += kept
+            if len(self.mix) > 1:
+                stats.update({f"docs/{name}": len(kept), f"tokens/{name}": int(sum(map(len, kept)))})
+        if len(self.mix) > 1:      # interleave the sources' documents (a fineweb-only chunk keeps the corpus order)
+            docs = [docs[k] for k in np.random.default_rng([self.seed, self.rank, c, 2]).permutation(len(docs))]
         windows, first, last = pack(docs, self.window, self.sep)
         order, dropped = constrained_order(first, last, self.cooldown, np.random.default_rng([self.seed, self.rank, c, 1]))
-        stats = Counter(docs=len(docs), tokens=int(sum(map(len, docs))), windows=len(order), dropped_windows=dropped)
+        stats.update(docs=len(docs), tokens=int(sum(map(len, docs))), windows=len(order), dropped_windows=dropped)
         return windows[order], stats
 
     # -- iteration
@@ -208,15 +298,23 @@ class FinewebStream:
         self.prefetch.shutdown(wait=False, cancel_futures=True)
 
 
+class FinewebStream(PretrainStream):
+    """fineweb-edu only (``units_per_chunk`` row groups per chunk)."""
+
+    def __init__(self, tokenizer, window, doc_sep_token_id, units_per_chunk: int = 16, **kw):
+        super().__init__(tokenizer, window, doc_sep_token_id, mix={"fineweb": units_per_chunk}, **kw)
+
+
 def validation_windows(tokenizer_name: str, window: int, doc_sep_token_id: int | None, n: int, long_docs: bool = False,
-                       num_proc: int = 4) -> np.ndarray:
-    """Fixed validation windows from the held-out shard: packed like training (``long_docs=False``) or the
-    first ``window`` tokens of documents that are at least that long (``long_docs=True``)."""
-    meta = json.loads(META_FILE.read_text())
+                       num_proc: int = 4, source: str = "fineweb") -> np.ndarray:
+    """Fixed validation windows from the held-out part of ``source``: packed like training (``long_docs=False``) or
+    the first ``window`` tokens of documents that are at least that long (``long_docs=True``)."""
+    src = SOURCES[source]
     tok, out, count = Tokenizer(tokenizer_name, num_proc), [], 0
     try:
-        for g in range(meta["num_row_groups"][VAL_SHARD]):
-            docs = tok(read_unit(meta["repo"], VAL_SHARD, g))
+        for f, g in src.val_units():
+            rows = read_unit(src.repo, f, g, src.columns) if len(src.columns) > 1 else read_unit(src.repo, f, g)
+            docs = tok(src.texts(rows, split="val"))
             if long_docs:
                 sep = [] if doc_sep_token_id is None else [doc_sep_token_id]
                 out += [np.concatenate([sep, d]).astype(np.int32)[:window] for d in docs if len(d) + len(sep) >= window]

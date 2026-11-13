@@ -27,7 +27,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import PretrainedConfig
 
 from recurrent_armt import RecurrentARMTConfig, RecurrentARMTForCausalLM
-from recurrent_armt.data import FinewebStream, validation_windows
+from recurrent_armt.data import PretrainStream, parse_mix, validation_windows
 
 
 def get_args():
@@ -64,6 +64,8 @@ def get_args():
     # data
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--units_per_chunk", type=int, default=16, help="row groups (1024 docs each) shuffled together")
+    p.add_argument("--mix", default=None, help="data mix as source:row groups per chunk, e.g. fineweb:4,arxiv:1,omr:2 "
+                   "(sources in recurrent_armt.data.SOURCES; default fineweb only, --units_per_chunk)")
     p.add_argument("--cooldown", type=int, default=None, help="min distance between windows of one document "
                    "(default: 2 x windows per optimizer step per GPU = no document in the same or adjacent batches)")
     p.add_argument("--min_doc_tokens", type=int, default=0, help="drop shorter documents (e.g. to train on long documents only)")
@@ -162,12 +164,17 @@ def main():
         sep = cfg["bos_token_id"] if cfg.get("bos_token_id") is not None else cfg.get("eos_token_id")
     per_step = a.batch_size * a.grad_accum
     cooldown = a.cooldown or 2 * per_step
-    stream = FinewebStream(tokenizer, window, sep, rank=rank, world_size=world, seed=a.seed,
-                           units_per_chunk=a.units_per_chunk, cooldown=cooldown, min_doc_tokens=a.min_doc_tokens,
-                           num_proc=a.num_proc)
+    mix = parse_mix(a.mix, a.units_per_chunk)
+    stream = PretrainStream(tokenizer, window, sep, rank=rank, world_size=world, seed=a.seed,
+                            mix=mix, cooldown=cooldown, min_doc_tokens=a.min_doc_tokens,
+                            num_proc=a.num_proc)
     val = {"val": validation_windows(tokenizer, window, sep, a.eval_windows, num_proc=a.num_proc)}
     if a.eval_long_windows:
         val["val_long"] = validation_windows(tokenizer, window, sep, a.eval_long_windows, long_docs=True, num_proc=a.num_proc)
+        for source in mix:        # long held-out documents of every other source of the mix
+            if source != "fineweb":
+                val[f"val_long_{source}"] = validation_windows(tokenizer, window, sep, a.eval_long_windows, long_docs=True,
+                                                               num_proc=a.num_proc, source=source)
     log(f"data: separator {sep}, cooldown {cooldown} windows, validation windows {', '.join(f'{k} {len(v)}' for k, v in val.items())}")
 
     rank, world, local = setup_distributed()
@@ -290,9 +297,10 @@ def main():
 
     def run_eval():
         res = {k: evaluate(model, v, a, rank, world, a.batch_size) for k, v in val.items()}
-        if a.eval_state_reset and "val_long" in val:
+        if a.eval_state_reset:           # the long-document sets again with the recurrent state reset at every boundary
             model.state_reset = True
-            res["val_long_reset"] = evaluate(model, val["val_long"], a, rank, world, a.batch_size)
+            for k in [k for k in val if k.startswith("val_long")]:
+                res[f"{k}_reset"] = evaluate(model, val[k], a, rank, world, a.batch_size)
             model.state_reset = False
         entry = {"step": step, **{f"{k}/loss": r["loss"] for k, r in res.items()},
                  **{f"{k}/seg{i}": x for k, r in res.items() for i, x in enumerate(r["per_segment"])}}
