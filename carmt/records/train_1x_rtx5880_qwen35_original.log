@@ -1,0 +1,12 @@
+data: separator 248044, cooldown 16 windows, validation windows val 8
+model: Qwen3_5ForCausalLM 773.7M params (21.28M ARMT), window 8192
+[memory step 0] read/hidden 0.00e+00 (max 0.00e+00), W_mv rms 0.00e+00
+[eval step 0] val 2.5977 per segment 2.687 2.730 2.410 2.548 2.449 2.702 2.638 2.617
+step 5 loss 2.6567 seg0 2.808 seg7 2.540 lr 5.0e-06/1.5e-04 gnorm 2.60 5.4k tok/s mem 28.9G
+step 10 loss 2.6245 seg0 2.716 seg7 2.504 lr 1.0e-05/3.0e-04 gnorm 3.79 6.3k tok/s mem 28.9G
+step 15 loss 2.6188 seg0 2.644 seg7 2.600 lr 6.9e-06/2.1e-04 gnorm 2.39 6.6k tok/s mem 28.9G
+step 20 loss 2.6265 seg0 2.647 seg7 2.541 lr 1.2e-06/3.7e-05 gnorm 2.45 6.6k tok/s mem 28.9G
+[memory step 20] read/hidden 2.84e-02 (max 6.38e-02), W_mv rms 6.50e-04
+[eval step 20] val 2.6033 per segment 2.678 2.729 2.424 2.557 2.458 2.700 2.646 2.636
+saved /mnt/data/users/ivan.rodkin/carmt_qwen/outputs/smoke_orig/last at step 20
+done

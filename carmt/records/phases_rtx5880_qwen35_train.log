@@ -1,0 +1,16 @@
+== no checkpointing
+step 3.070 s (with a sync at every phase boundary)
+  C: recurrent layers bwd                            1.325 s   43.2%
+  C: head fwd (loss + its gradient)                  0.634 s   20.6%
+  C: recurrent layers fwd                            0.412 s   13.4%
+  PyTorch: attention layers (fwd + recompute)        0.186 s    6.1%
+  C: head bwd                                        0.003 s    0.1%
+  rest (embedding copies, autograd, Python)          0.511 s
+== ckpt
+step 3.372 s (with a sync at every phase boundary)
+  C: recurrent layers bwd                            1.363 s   40.4%
+  C: head fwd (loss + its gradient)                  0.658 s   19.5%
+  C: recurrent layers fwd                            0.425 s   12.6%
+  PyTorch: attention layers (fwd + recompute)        0.190 s    5.6%
+  C: head bwd                                        0.003 s    0.1%
+  rest (embedding copies, autograd, Python)          0.733 s

@@ -1,0 +1,10 @@
+Qwen3.5 + ARMT, 773.7M parameters, B=2, T=2048
+1. ARMT at init vs the HF base model, fp32 logits: carmt 1.74e-03, original 4.93e-04
+2. active memory, fp32 logits vs the exact recurrence: carmt 2.83e-06, original (fla) 1.75e-03; loss carmt 14.247771, original 14.248813
+3. bf16 training step: loss carmt 14.24793, original 14.24779, fp32 14.24881
+   gradients vs fp32, 411 parameters: carmt's error / the original's bf16 error: median 0.84, max 6.79; median error carmt 7.50e-03, original 9.01e-03
+   memory_layers.1.W_mb.bias                                              carmt 8.12e-03  original 1.20e-03
+   memory                                                                 carmt 6.62e-01  original 2.56e-01
+   model.model.layers.12.linear_attn.dt_bias                              carmt 1.43e-02  original 5.83e-03
+   model.model.layers.0.input_layernorm.weight                            carmt 1.57e-01  original 6.49e-02
+   model.model.layers.12.linear_attn.A_log                                carmt 1.43e-02  original 6.20e-03

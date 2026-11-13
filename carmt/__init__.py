@@ -63,6 +63,13 @@ _L_TORCH = {"n1": "norm_1.weight", "q": "attn.q_proj.weight", "k": "attn.k_proj.
             "g2b": "attn.g_proj.1.bias", "on": "attn.o_norm.weight", "o": "attn.o_proj.weight", "n2": "norm_2.weight",
             "w1": "mlp.swiglu.w1.weight", "w2": "mlp.swiglu.w2.weight", "w3": "mlp.swiglu.w3.weight"}
 _L_MEM = {"mq": "W_mq.weight", "mk": "W_mk.weight", "mv": "W_mv.weight", "mb": "W_mb.weight", "mbb": "W_mb.bias"}
+# Qwen3.5 Gated DeltaNet layers (HF Qwen3_5DecoderLayer) in the same slots (see make_dims in armt.cu): in_proj_qkv -> q,
+# in_proj_z -> k, in_proj_b -> b, in_proj_a -> f1, the conv over all qkv channels -> qc; the other slots stay empty.
+_QW_TORCH = {"n1": "input_layernorm.weight", "q": "linear_attn.in_proj_qkv.weight", "k": "linear_attn.in_proj_z.weight",
+             "b": "linear_attn.in_proj_b.weight", "f1": "linear_attn.in_proj_a.weight", "qc": "linear_attn.conv1d.weight",
+             "alog": "linear_attn.A_log", "dtb": "linear_attn.dt_bias", "on": "linear_attn.norm.weight",
+             "o": "linear_attn.out_proj.weight", "n2": "post_attention_layernorm.weight", "w1": "mlp.gate_proj.weight",
+             "w2": "mlp.up_proj.weight", "w3": "mlp.down_proj.weight"}
 
 
 class ArmtConfig(ctypes.Structure):
@@ -70,7 +77,7 @@ class ArmtConfig(ctypes.Structure):
                [("norm_eps", ctypes.c_float)] + \
                [(n, ctypes.c_int) for n in ("num_mem", "d_mem", "mem_heads", "segment_size", "mem_in_stream", "gating", "tie_emb",
                                             "allow_tf32")] + \
-               [("wrap", ctypes.c_int * MAXL)]
+               [("wrap", ctypes.c_int * MAXL), ("kind", ctypes.c_int), ("norm_plus1", ctypes.c_int), ("attn", ctypes.c_int * MAXL)]
 
 
 class ArmtForwardArgs(ctypes.Structure):
@@ -148,6 +155,12 @@ def _lib(precision: str) -> ctypes.CDLL:
         lib.armt_forward.argtypes, lib.armt_forward.restype = [vp, ctypes.POINTER(vp), ctypes.POINTER(ArmtForwardArgs)], i
         lib.armt_backward.argtypes, lib.armt_backward.restype = [vp, ctypes.POINTER(vp), vp, vp, vp], i
         lib.armt_backward_range.argtypes, lib.armt_backward_range.restype = [vp, ctypes.POINTER(vp), vp, vp, vp, i, i], i
+        ip = ctypes.POINTER(ctypes.c_int)
+        lib.armt_hy_begin.argtypes, lib.armt_hy_begin.restype = [vp, ctypes.POINTER(vp), ctypes.POINTER(ArmtForwardArgs), ip, i, ip], i
+        lib.armt_hy_run.argtypes, lib.armt_hy_run.restype = [vp, ctypes.POINTER(vp), i, i, vp, vp, vp, vp, vp], i
+        lib.armt_hy_head.argtypes, lib.armt_hy_head.restype = [vp, ctypes.POINTER(vp), vp, vp], i
+        lib.armt_hy_head_bwd.argtypes, lib.armt_hy_head_bwd.restype = [vp, ctypes.POINTER(vp), vp, vp, vp], i
+        lib.armt_hy_run_bwd.argtypes, lib.armt_hy_run_bwd.restype = [vp, ctypes.POINTER(vp), i, i, vp, vp, vp, vp, vp], i
         _LIBS[precision] = lib
     return _LIBS[precision]
 
@@ -294,6 +307,113 @@ class _LayerBackward(torch.autograd.Function):
         return (None, None, None, None, gloss, *grads)
 
 
+# ------------------------------------------------------------------------------------------- hybrid backbones
+# Qwen3.5: recurrent (Gated DeltaNet) layers in C, attention layers in PyTorch (``backbone.attention_layer``), layer by
+# layer over all the segments of a call (armt_hy_* in armt.cu). The hidden streams between them are the real tokens
+# [B, T, D] and the memory tokens of the segment-ending pieces [B, nw, M, D], fp32.
+class _HyCall:
+    """One hybrid C call in progress (armt_hy_begin .. head), and for training its pending backward."""
+
+    def __init__(self, runner, cctx, ids, pieces, train, grad=None, needs=None, keep=None):
+        self.runner, self.cctx, self.ids, self.pieces, self.train = runner, cctx, ids, pieces, train
+        self.grad, self.needs, self.keep = grad, needs, keep
+        self.ptrs = runner._param_ptrs()
+        self.nw = sum(1 for _, _, tm in pieces if tm)
+
+    def check(self):
+        if self.cctx.pending is not self:
+            raise RuntimeError("carmt: another forward ran between this training forward and its backward")
+
+    def run(self, lo, hi, real, mem, train_out=True):
+        B, T = self.ids.shape
+        D, M = self.runner.cfg.d_model, self.runner.cfg.num_mem
+        real_out = torch.empty(B, T, D, device=self.ids.device)
+        mem_out = torch.empty(B, self.nw, M, D, device=self.ids.device)
+        st = torch.cuda.current_stream().cuda_stream
+        real = real.float().contiguous() if real is not None else None
+        mem = mem.float().contiguous() if mem is not None and self.nw else None
+        rc = self.cctx.lib.armt_hy_run(self.cctx.handle, self.ptrs, lo, hi, _ptr(real), _ptr(mem),
+                                       real_out.data_ptr(), mem_out.data_ptr() if self.nw else None, st)
+        _check(self.cctx.lib, rc, "hybrid forward")
+        return real_out, mem_out
+
+    def grads(self, idx, params):
+        out = []
+        for j, p in zip(idx, params):
+            if p is None or not self.needs[j] or self.cctx.numel[j] == 0:
+                out.append(None)
+            else:
+                o, n = self.cctx.offset[j], self.cctx.numel[j]
+                out.append(self.grad[o:o + n].view(p.shape))
+        return out
+
+
+class _HyRun(torch.autograd.Function):
+    """Recurrent layers [lo, hi) of a hybrid training call (lo == 0: from the embeddings; ``anchor`` keeps this first node
+    on the backward path). Returns the real and memory-token streams; the backward returns the gradients of the inputs and
+    of the parameters ``idx`` (for lo == 0 also the embeddings and memory tokens, whose gradients end there)."""
+
+    @staticmethod
+    def forward(ctx, call: _HyCall, lo: int, hi: int, idx, real, mem, anchor, *params):
+        call.check()
+        ctx.call, ctx.lo, ctx.hi, ctx.idx, ctx.params = call, lo, hi, idx, params
+        return call.run(lo, hi, real if lo > 0 else None, mem if lo > 0 else None)
+
+    @staticmethod
+    def backward(ctx, d_real, d_mem):
+        call, lo, hi = ctx.call, ctx.lo, ctx.hi
+        call.check()
+        B, T = call.ids.shape
+        cfg = call.runner.cfg
+        dev = call.ids.device
+        d_real = torch.zeros(B, T, cfg.d_model, device=dev) if d_real is None else d_real.float().contiguous()
+        d_mem = None if d_mem is None or not call.nw else d_mem.float().contiguous()
+        d_real_in = torch.empty(B, T, cfg.d_model, device=dev) if lo > 0 else None
+        d_mem_in = torch.empty(B, call.nw, cfg.num_mem, cfg.d_model, device=dev) if lo > 0 and call.nw else None
+        lib, h = call.cctx.lib, call.cctx.handle
+        rc = lib.armt_hy_run_bwd(h, call.ptrs, lo, hi, d_real.data_ptr(), _ptr(d_mem), _ptr(d_real_in), _ptr(d_mem_in),
+                                 torch.cuda.current_stream().cuda_stream)
+        if lo == 0:
+            call.cctx.pending = None
+        _check(lib, rc, "hybrid backward")
+        if lo == 0:
+            _check(lib, lib.armt_release(h, 0), "release")
+            call.keep = None
+        grads = call.grads(ctx.idx, ctx.params)
+        ctx.call = ctx.params = None
+        if d_mem_in is None and lo > 0:
+            d_mem_in = torch.zeros(B, 0, cfg.num_mem, cfg.d_model, device=dev)
+        return (None, None, None, None, d_real_in, d_mem_in, None, *grads)
+
+
+class _HyHead(torch.autograd.Function):
+    """Final norm + loss of a hybrid training call. Returns (loss, token losses)."""
+
+    @staticmethod
+    def forward(ctx, call: _HyCall, real, tl, inv_n, *params):
+        call.check()
+        rc = call.cctx.lib.armt_hy_head(call.cctx.handle, call.ptrs, real.float().contiguous().data_ptr(),
+                                        torch.cuda.current_stream().cuda_stream)
+        _check(call.cctx.lib, rc, "hybrid head")
+        ctx.call, ctx.params = call, params
+        ctx.mark_non_differentiable(tl)
+        return tl.sum() * inv_n[0], tl
+
+    @staticmethod
+    def backward(ctx, gloss, _gtl):
+        call = ctx.call
+        call.check()
+        B, T = call.ids.shape
+        d_real = torch.empty(B, T, call.runner.cfg.d_model, device=call.ids.device)
+        g = gloss.detach().float().reshape(1).contiguous()
+        rc = call.cctx.lib.armt_hy_head_bwd(call.cctx.handle, call.ptrs, g.data_ptr(), d_real.data_ptr(),
+                                            torch.cuda.current_stream().cuda_stream)
+        _check(call.cctx.lib, rc, "hybrid head backward")
+        grads = call.grads([1, 2], ctx.params)   # final norm, untied lm_head (a tied one: with the embeddings, at lo == 0)
+        ctx.call = ctx.params = None
+        return (None, d_real, None, None, *grads)
+
+
 class CARMT:
     """Runs a ``RecurrentARMTForCausalLM`` (GDN-2 backbone) through the C/CUDA implementation, on its own parameters."""
 
@@ -303,8 +423,13 @@ class CARMT:
         from recurrent_armt.gdn2 import GDN2ForCausalLM
         self.model = model
         self.scan_fp32 = scan_fp32
+        self.contexts: dict[str, _Context] = {}
         cfg = model.config
         base = model.model
+        self.hybrid = type(base).__name__ == "Qwen3_5ForCausalLM"
+        if self.hybrid:
+            self._init_qwen35(model)
+            return
         if not isinstance(base, GDN2ForCausalLM):
             raise TypeError(f"carmt supports GDN-2 backbones (GDN2ForCausalLM), not {type(base).__name__}")
         bc = base.config
@@ -327,12 +452,69 @@ class CARMT:
         for i in range(c.n_layers):
             c.wrap[i] = int(wrap[i])
         self.cfg = c
-        self.contexts: dict[str, _Context] = {}
+
+    def _init_qwen35(self, model):
+        """Qwen3.5 (HF ``Qwen3_5ForCausalLM``): Gated DeltaNet layers here, attention layers through the backbone."""
+        cfg, base = model.config, model.model
+        bc, inner = base.config, base.model
+        att = [model.backbone.is_attention(i) for i in range(len(inner.layers))]
+        gdn = [inner.layers[i].linear_attn for i in range(len(att)) if not att[i]]
+        g = gdn[0]
+        if not (g.num_v_heads == g.num_k_heads and g.head_k_dim == g.head_v_dim and g.head_k_dim in (64, 128)
+                and g.conv_kernel_size == 4 and g.conv1d.bias is None and g.activation in ("silu", "swish")
+                and bc.hidden_act in ("silu", "swish")):
+            raise ValueError("carmt: unsupported Qwen3.5 GDN (needs as many value as key heads, head dim 64 or 128 for both, "
+                             "a conv of size 4 without bias, SiLU)")
+        if cfg.num_mem_tokens > 0 and not (cfg.use_denom and cfg.correction and cfg.memory_dtype == "float32"):
+            raise ValueError("carmt: the memory needs use_denom=True, correction=True, memory_dtype=float32")
+        if cfg.mem_tokens_in_stream:
+            raise ValueError("carmt: hybrids need mem_tokens_in_stream=False (memory tokens as a read-out branch)")
+        c = ArmtConfig()
+        c.vocab, c.d_model, c.n_layers = bc.vocab_size, bc.hidden_size, len(inner.layers)
+        c.n_heads, c.head_dim, c.d_ff, c.conv_size = g.num_v_heads, g.head_k_dim, bc.intermediate_size, 4
+        c.gate_swish, c.norm_eps = 1, bc.rms_norm_eps
+        c.num_mem, c.d_mem, c.mem_heads, c.segment_size = cfg.num_mem_tokens, cfg.d_mem, cfg.n_heads, cfg.segment_size
+        c.mem_in_stream, c.gating = 0, int(cfg.gating)
+        emb, head = inner.embed_tokens.weight, base.lm_head.weight
+        c.tie_emb = int(emb is head or emb.data_ptr() == head.data_ptr())
+        c.kind, c.norm_plus1 = 1, 1
+        wrap = cfg.wrap_layers if cfg.wrap_layers is not None else [int(not a) for a in att]
+        for i in range(c.n_layers):
+            c.wrap[i], c.attn[i] = int(wrap[i] and not att[i]), int(att[i])
+        self.cfg = c
+        # execution plan: runs of recurrent layers ("run", lo, hi) and attention layers ("attn", i); a leading empty run
+        # takes the embeddings out of the library if layer 0 is an attention layer
+        plan, i = [], 0
+        while i < c.n_layers:
+            if att[i]:
+                plan.append(("attn", i, i + 1)); i += 1
+            else:
+                j = i
+                while j < c.n_layers and not att[j]:
+                    j += 1
+                plan.append(("run", i, j)); i = j
+        if plan[0][0] != "run":
+            plan.insert(0, ("run", 0, 0))
+        self.plan = plan
 
     # ------------------------------------------------------------------ parameters in the C order
     @property
     def params(self) -> list[torch.Tensor | None]:
         m, base = self.model, self.model.model
+        if self.hybrid:
+            inner = base.model
+            ps = [inner.embed_tokens.weight, inner.norm.weight, None if self.cfg.tie_emb else base.lm_head.weight,
+                  m.memory if self.cfg.num_mem > 0 else None]
+            for i, layer in enumerate(inner.layers):
+                if self.cfg.attn[i]:
+                    ps += [None] * len(_L_NAMES)
+                    continue
+                mods = dict(layer.named_parameters())
+                memory = m._memory_of(i)
+                mm = dict(memory.named_parameters()) if memory is not None else {}
+                for n in _L_NAMES:
+                    ps.append(mods[_QW_TORCH[n]] if n in _QW_TORCH else mm.get(_L_MEM.get(n)))   # empty slots: None
+            return ps
         ps = [base.model.embeddings.weight, base.model.norm.weight, None if self.cfg.tie_emb else base.lm_head.weight,
               m.memory if self.cfg.num_mem > 0 else None]
         for i, layer in enumerate(base.model.layers):
@@ -380,6 +562,9 @@ class CARMT:
         out = []
         dk, Hm = 6 * c.d_mem, max(c.mem_heads, 1)
         for i in range(c.n_layers):
+            if c.attn[i]:
+                out += [None] * 4
+                continue
             has_mem = c.num_mem > 0 and c.wrap[i]
             out += [torch.zeros(B, H, K, K, device=device), torch.zeros(B, 3 * H * K, c.conv_size, device=device),
                     torch.zeros(B, Hm, dk // Hm, c.d_model // Hm, device=device) if has_mem else None,
@@ -388,6 +573,16 @@ class CARMT:
 
     def _from_armt_state(self, state) -> list[torch.Tensor | None]:
         out = []
+        if self.hybrid:   # GDN: (conv state [B, C, 3] (the last 3 inputs), S); attention: the KV cache (kept by the caller)
+            for i, (mem, rnn) in enumerate(state.layers):
+                if self.cfg.attn[i]:
+                    out += [None] * 4
+                    continue
+                cs, S = rnn
+                cs = cs.float()
+                out += [S.float().contiguous().clone(), torch.cat([cs.new_zeros(cs.shape[0], cs.shape[1], 1), cs], dim=2).contiguous()]
+                out += [mem[0].float().contiguous().clone(), mem[1].float().contiguous().clone()] if mem is not None else [None, None]
+            return out
         for mem, rnn in state.layers:
             out.append(rnn["recurrent_state"].float().contiguous().clone())
             out.append(torch.cat([t.float() for t in rnn["conv_state"]], dim=1).contiguous())
@@ -397,10 +592,18 @@ class CARMT:
                 out += [None, None]
         return out
 
-    def _to_armt_state(self, st: list, position: int):
+    def _to_armt_state(self, st: list, position: int, kvs=None):
         from recurrent_armt.modeling import ARMTState
         HK = self.cfg.n_heads * self.cfg.head_dim
         layers = []
+        if self.hybrid:
+            for i in range(self.cfg.n_layers):
+                if self.cfg.attn[i]:
+                    layers.append((None, kvs[i]))
+                    continue
+                S, cs, W, z = st[4 * i:4 * i + 4]
+                layers.append(((W, z) if W is not None else None, (cs[:, :, 1:].contiguous(), S)))
+            return ARMTState(layers, position)
         for i in range(self.cfg.n_layers):
             S, cs, W, z = st[4 * i:4 * i + 4]
             rnn = {"recurrent_state": S, "conv_state": tuple(cs[:, j * HK:(j + 1) * HK].contiguous() for j in range(3))}
@@ -468,6 +671,14 @@ class CARMT:
             torch._assert_async(((labels >= 0) & (labels < self.cfg.vocab) | (labels == -100)).all(), "label out of range")
             inv_n = (1.0 / (labels[:, 1:] != -100).sum().clamp(min=1).float()).reshape(1)
         cctx = self._context(self._precision())
+        # hybrid inference runs layer-major over the whole call (O(T) hidden buffers): longer calls go in chunks of
+        # CARMT_HY_CHUNK tokens (default 8 segments) with the state carried, as the original's segment-by-segment pass
+        chunk = int(os.environ.get("CARMT_HY_CHUNK", 8 * self.cfg.segment_size)) if self.hybrid else 0
+        if self.hybrid and not grad_on and 0 < chunk < T:
+            return self._hy_chunked(ids, labels, inv_n, state, return_state, output_logits, chunk)
+        if self.hybrid:
+            return self._hy_forward(cctx, ids, labels, inv_n, reset, state, position, new_position, grad_on, return_state,
+                                    output_logits)
 
         if grad_on:
             ps = self.params
@@ -504,6 +715,146 @@ class CARMT:
             return ARMTOutput(loss=loss, logits=logits, token_losses=tl, state=out_state)
 
     __call__ = forward
+
+    # ------------------------------------------------------------------ hybrid (Qwen3.5)
+    def _hy_begin(self, cctx, ids, args_kw, train, grad=None, needs=None, keep=None, max_pieces=None):
+        B, T = ids.shape
+        a = ArmtForwardArgs()
+        a.ids, a.B, a.T = ids.data_ptr(), B, T
+        a.labels, a.inv_n = _ptr(args_kw.get("labels")), _ptr(args_kw.get("inv_n"))
+        a.token_losses, a.logits = _ptr(args_kw.get("token_losses")), _ptr(args_kw.get("logits"))
+        a.logits_last, a.position, a.train = int(args_kw.get("logits_last", False)), args_kw.get("position", 0), int(train)
+        a.reset = _ptr(args_kw.get("reset"))
+        st = args_kw.get("state")
+        st_arr = (ctypes.c_void_p * len(st))(*[_ptr(t) for t in st]) if st is not None else None
+        a.state = st_arr
+        a.grad = _ptr(grad)
+        version = self._weights_version()
+        a.repack = int(version != cctx.version)
+        cctx.version = version
+        a.stream = torch.cuda.current_stream().cuda_stream
+        cap = max_pieces
+        pieces = (ctypes.c_int * (3 * cap))()
+        n = ctypes.c_int(0)
+        rc = cctx.lib.armt_hy_begin(cctx.handle, self._param_ptrs(), ctypes.byref(a), pieces, cap, ctypes.byref(n))
+        _check(cctx.lib, rc, "hybrid forward")
+        pcs = [(pieces[3 * k], pieces[3 * k + 1], pieces[3 * k + 2]) for k in range(n.value)]
+        call = _HyCall(self, cctx, ids, pcs, train, grad, needs, keep)
+        call._keep_args = (a, st_arr)   # the library keeps pointers to these until the head
+        return call
+
+    def _hy_chunked(self, ids, labels, inv_n, state, return_state, output_logits, chunk):
+        """No-grad hybrid call in chunks of ``chunk`` tokens, the state (KV caches included) carried between them. The loss
+        of the last token of each chunk (its target is the next chunk's first) comes from that chunk's last logits."""
+        import torch.nn.functional as F
+        from recurrent_armt.modeling import ARMTOutput
+        B, T = ids.shape
+        full = bool(output_logits) and output_logits != "last"
+        st, logits, tls = state, [], []
+        for a in range(0, T, chunk):
+            b = min(T, a + chunk)
+            want = "last" if not full and (labels is not None and b < T or output_logits == "last" and b == T) else full
+            o = self.forward(input_ids=ids[:, a:b], labels=labels[:, a:b] if labels is not None else None, state=st,
+                             return_state=True, output_logits=want)
+            st = o.state
+            st._carmt_consume = b < T   # ours: the next chunk may drop its KV caches as it replaces them
+            if labels is not None:
+                tls.append(o.token_losses)
+                if b < T:   # last token of this chunk -> first label of the next
+                    tgt = labels[:, b]
+                    tls.append(F.cross_entropy(o.logits[:, -1].float(), tgt.clamp_min(0), reduction="none")
+                               .masked_fill(tgt == -100, 0.0)[:, None])
+            if full:
+                logits.append(o.logits)
+            elif output_logits == "last" and b == T:
+                logits.append(o.logits)
+        tl = torch.cat(tls, dim=1) if labels is not None else None
+        loss = tl.sum() * inv_n[0] if labels is not None else None
+        return ARMTOutput(loss=loss, logits=torch.cat(logits, dim=1) if logits else None, token_losses=tl,
+                          state=st if return_state else None)
+
+    def _hy_attention(self, call, i, real, mem, kv):
+        """Attention layer i (PyTorch, the backbone's layers-first path) on the real tokens and the segment-ending memory tokens."""
+        readouts = [(mem[:, w], start + tr) for w, (start, tr, tm) in enumerate([p for p in call.pieces if p[2]])]
+        m = self.model
+        # as the original: recomputed in the backward when the model checkpoints. CARMT_ATTN_CKPT=0 keeps the attention
+        # layers' activations instead (faster: Qwen3.5-0.8B, batch 4 x 8192: 3.2 vs 3.6 s per step, 36 vs 18 GB peak)
+        ckpt = os.environ.get("CARMT_ATTN_CKPT", "1") != "0"
+        if ckpt and m.gradient_checkpointing and m.training and torch.is_grad_enabled():
+            from torch.utils.checkpoint import checkpoint
+            real, kv, outs = checkpoint(m.backbone.attention_layer, i, real, kv, readouts, use_reentrant=False)
+        else:
+            real, kv, outs = m.backbone.attention_layer(i, real, kv, readouts)
+        mem = torch.stack(outs, dim=1) if outs else mem
+        return real, mem, kv
+
+    def _hy_forward(self, cctx, ids, labels, inv_n, reset, state, position, new_position, grad_on, return_state, output_logits):
+        from recurrent_armt.modeling import ARMTOutput
+        B, T = ids.shape
+        S = self.cfg.segment_size
+        max_pieces = (T + position) // S + 2
+        if grad_on:
+            ps = self.params
+            mask = bytes(int(p is not None and p.requires_grad) for p in ps)
+            if mask != cctx.mask:
+                cctx.lib.armt_set_grad_mask(cctx.handle, mask)
+                cctx.mask = mask
+            grad = torch.zeros(cctx.grad_size, device=ids.device, dtype=torch.float32)
+            tl = torch.zeros(B, max(T - 1, 0), device=ids.device, dtype=torch.float32)
+            needs = [p is not None and p.requires_grad for p in ps]
+            call = self._hy_begin(cctx, ids, dict(labels=labels, inv_n=inv_n, token_losses=tl, reset=reset), True, grad, needs,
+                                  (ids, labels, inv_n, reset, tl), max_pieces)
+            cctx.pending = call
+            nl = len(_L_NAMES)
+            anchor = self._anchor(ids.device)
+            real = mem = None
+            for kind, lo, hi in self.plan:
+                if kind == "run":
+                    idx = tuple(range(_N_GLOBAL + lo * nl, _N_GLOBAL + hi * nl))
+                    if lo == 0:
+                        idx = (0, 3) + idx    # the embeddings and memory tokens get their gradients at the end of the backward
+                    real, mem = _HyRun.apply(call, lo, hi, idx, real, mem, anchor, *[ps[j] for j in idx])
+                else:
+                    real, mem, _ = self._hy_attention(call, lo, real, mem, None)
+            loss, tl = _HyHead.apply(call, real, tl, inv_n, ps[1], ps[2])
+            return ARMTOutput(loss=loss, logits=None, token_losses=tl, state=None)
+
+        with torch.no_grad():
+            if cctx.pending is not None:   # a training call awaits its backward in this context: do not touch its record
+                key = cctx.precision + "/inference"
+                if key not in self.contexts:
+                    self.contexts[key] = _Context(cctx.precision, self.cfg, self.params)
+                cctx = self.contexts[key]
+            st, kvs = None, [None] * self.cfg.n_layers
+            if state is not None:
+                st = self._from_armt_state(state)
+                kvs = [state.layers[i][1] if self.cfg.attn[i] else None for i in range(self.cfg.n_layers)]
+                if getattr(state, "_carmt_consume", False):   # an intermediate state of _hy_chunked: hold each layer's
+                    state.layers = None                       # old KV cache only until its replacement is built
+            elif return_state:
+                st = self._zero_state(B, ids.device)
+            V = self.cfg.vocab
+            logits = None
+            if output_logits == "last":
+                logits = torch.empty(B, 1, V, device=ids.device)
+            elif output_logits:
+                logits = torch.empty(B, T, V, device=ids.device)
+            tl = torch.zeros(B, max(T - 1, 0), device=ids.device) if labels is not None else None
+            call = self._hy_begin(cctx, ids, dict(labels=labels, inv_n=inv_n, token_losses=tl, logits=logits,
+                                                  logits_last=output_logits == "last", position=position, reset=reset, state=st),
+                                  False, max_pieces=max_pieces)
+            real = mem = None
+            for kind, lo, hi in self.plan:
+                if kind == "run":
+                    real, mem = call.run(lo, hi, real, mem)
+                else:
+                    real, mem, kvs[lo] = self._hy_attention(call, lo, real, mem, kvs[lo])
+            rc = cctx.lib.armt_hy_head(cctx.handle, call.ptrs, real.float().contiguous().data_ptr(),
+                                       torch.cuda.current_stream().cuda_stream)
+            _check(cctx.lib, rc, "hybrid head")
+            loss = tl.sum() * inv_n[0] if labels is not None else None
+            out_state = self._to_armt_state(st, new_position, kvs) if return_state else None
+            return ARMTOutput(loss=loss, logits=logits, token_losses=tl, state=out_state)
 
     def release_memory(self):
         """Give all of the library's device memory (packed weights, scratch) back to PyTorch's cache."""

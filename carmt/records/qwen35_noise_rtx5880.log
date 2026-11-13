@@ -1,0 +1,15 @@
+411 parameters; error vs the fp32 original; ratio = err / err(original bf16 (run 1)) per parameter
+variant                                     med err ratio med    p95    max  worst
+original bf16 (run 1)                      8.06e-03      1.00   1.00   1.00  model.model.norm.weight
+original bf16 (run 2)                      8.00e-03      1.00   1.08   1.46  memory_layers.5.W_mb.bias
+original bf16, backward inside autocast    7.90e-03      1.00   1.11   2.18  memory_layers.21.W_mq.weight
+original bf16, math attention              7.71e-03      0.97   1.32   6.09  memory_layers.14.W_mb.bias
+carmt bf16                                 6.66e-03      0.83   1.36   4.81  memory_layers.13.W_mk.weight
+carmt bf16, math attention                 6.51e-03      0.82   1.38  16.55  memory_layers.14.W_mb.bias
+
+flagged parameters, error vs fp32:
+                                                       orig (run 1)       orig (run 2) orig, backward ins orig, math attenti              carmt carmt, math attent
+memory                                                     9.21e-02           9.31e-02           8.96e-02           8.99e-02           6.14e-02           6.86e-02
+model.model.layers.0.input_layernorm.weight                2.04e-02           2.01e-02           1.97e-02           2.00e-02           1.34e-02           1.36e-02
+model.model.layers.12.linear_attn.dt_bias                  7.74e-03           6.38e-03           6.70e-03           1.12e-02           1.05e-02           1.40e-02
+memory_layers.1.W_mb.bias                                  1.04e-02           1.31e-02           1.13e-02           6.19e-03           8.27e-03           1.41e-02

@@ -1,0 +1,13 @@
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[64-ends_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[64-starts_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[57-ends_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[57-starts_attn]
+PASSED carmt/tests/test_hybrid.py::test_loss_and_gradients_fp32[ends_attn]
+PASSED carmt/tests/test_hybrid.py::test_loss_and_gradients_fp32[starts_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_and_gradients_bf16
+PASSED carmt/tests/test_hybrid.py::test_pieces_equal_whole_and_state_interop
+PASSED carmt/tests/test_hybrid.py::test_generation_matches_forward
+PASSED carmt/tests/test_hybrid.py::test_state_dropout_training
+PASSED carmt/tests/test_hybrid.py::test_accelerate_training_steps_and_frozen_backbone
+PASSED carmt/tests/test_hybrid.py::test_long_inference_in_chunks_equals_whole
+============================== 12 passed in 5.35s ==============================

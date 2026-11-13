@@ -1,0 +1,39 @@
+{
+ "gpu": "NVIDIA RTX 5880 Ada Generation",
+ "batch": 4,
+ "window": 8192,
+ "segment_size": 1024,
+ "num_mem_tokens": 32,
+ "precision": "bf16",
+ "original_mode": "horizontal",
+ "train/carmt": {
+  "s": 3.1814271158073097,
+  "tok_per_s": 10299.780195242627,
+  "peak_gb": 35.4169716835022
+ },
+ "train/carmt_ckpt": {
+  "s": 3.603685881802812,
+  "tok_per_s": 9092.912388803206,
+  "peak_gb": 18.280699253082275
+ },
+ "train/original_ckpt": {
+  "s": 5.136640001554042,
+  "tok_per_s": 6379.267379081724,
+  "peak_gb": 23.187150955200195
+ },
+ "train/original_nockpt": "OOM",
+ "infer/carmt": {
+  "s": 0.9463358448352664,
+  "tok_per_s": 34626.184962595486
+ },
+ "infer/original": {
+  "s": 1.2602256714599207,
+  "tok_per_s": 26001.692190605507
+ },
+ "decode/carmt": {
+  "ms_per_token": 6.648202195719932
+ },
+ "decode/original": {
+  "ms_per_token": 22.615241890889592
+ }
+}

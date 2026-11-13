@@ -137,6 +137,9 @@ typedef struct {
     float norm_eps;
     int num_mem, d_mem, mem_heads, segment_size, mem_in_stream, gating, tie_emb, allow_tf32;
     int wrap[MAXL];
+    int kind;          // 0: GDN-2 (fla GatedDeltaNet2); 1: Qwen3.5 Gated DeltaNet (one gate and one beta per head)
+    int norm_plus1;    // the block and final RMSNorms scale by (1 + w) (Qwen3.5)
+    int attn[MAXL];    // 1: an attention layer of a hybrid: no parameters here; it runs outside (armt_hy_* API)
 } ArmtConfig;
 
 // canonical parameter order (the Python side passes pointers in this order; grads use a flat buffer in this order)
@@ -147,6 +150,9 @@ enum { L_N1, L_Q, L_K, L_V, L_B, L_W, L_F1, L_G1, L_QC, L_KC, L_VC, L_F2, L_ALOG
 typedef struct {
     ArmtConfig c;
     int D, L, H, KD, KDt, VDt, Hv, F, W, NP, Cc, dm, Hm, dk, nmb, M, V;
+    int sg;                  // kind 1: scalar gate / beta per head
+    int ob, ow, oa, oz;      // columns of the packed projection P: beta (b), w, gate input (kind 1: a), output gate (kind 1: z)
+    float woff;              // RMSNorm weight offset (1 for (1 + w) norms)
     int has_mem[MAXL];
     long n_params;
     long numel[P_GLOBAL + MAXL * L_COUNT];
@@ -159,8 +165,16 @@ static void make_dims(Dims* d, const ArmtConfig* c) {
     d->c = *c;
     d->D = c->d_model; d->L = c->n_layers; d->H = c->n_heads; d->KD = c->head_dim; d->F = c->d_ff; d->W = c->conv_size;
     d->KDt = d->H * d->KD; d->VDt = d->KDt; d->Hv = d->KD;
-    d->NP = 2 * d->KDt + d->VDt + d->KDt + d->VDt + 2 * d->Hv;
     d->Cc = 2 * d->KDt + d->VDt;
+    d->sg = c->kind == 1;
+    d->woff = c->norm_plus1 ? 1.f : 0.f;
+    if (!d->sg) {   // [q | k | v | b | w | f1 | g1]
+        d->NP = 2 * d->KDt + d->VDt + d->KDt + d->VDt + 2 * d->Hv;
+        d->ob = 3 * d->KDt; d->ow = 3 * d->KDt + d->VDt; d->oa = -1; d->oz = -1;
+    } else {        // [qkv | z | beta | a]: the slots L_Q = in_proj_qkv, L_K = in_proj_z, L_B = in_proj_b, L_F1 = in_proj_a
+        d->NP = d->Cc + d->VDt + 2 * d->H;
+        d->oz = d->Cc; d->ob = d->ow = d->Cc + d->VDt; d->oa = d->ob + d->H;
+    }
     d->M = c->num_mem; d->dm = c->d_mem; d->Hm = c->mem_heads > 0 ? c->mem_heads : 1; d->dk = 6 * c->d_mem;
     d->nmb = c->gating ? d->D : d->Hm; d->V = c->vocab;
     long* n = d->numel;
@@ -168,13 +182,23 @@ static void make_dims(Dims* d, const ArmtConfig* c) {
     for (int i = 0; i < d->L; i++) {
         long* p = n + P_GLOBAL + i * L_COUNT;
         int D = d->D;
-        d->has_mem[i] = d->M > 0 && c->wrap[i];
+        d->has_mem[i] = d->M > 0 && c->wrap[i] && !c->attn[i];
+        if (c->attn[i]) continue;   // an attention layer: no parameters in this library
+        if (d->sg) {
+            // Qwen3.5: in_proj_qkv -> L_Q, in_proj_z -> L_K, in_proj_b -> L_B, in_proj_a -> L_F1, conv1d (all channels) -> L_QC,
+            // A_log, dt_bias (per head), norm (gated, per channel of a head) -> L_ON, out_proj -> L_O; the other slots are empty.
+            // The grad layout of [L_Q .. L_G1] is then exactly the packed [qkv | z | beta | a] matrix.
+            p[L_N1] = D; p[L_Q] = (long)d->Cc * D; p[L_K] = (long)d->VDt * D; p[L_B] = (long)d->H * D; p[L_F1] = (long)d->H * D;
+            p[L_QC] = (long)d->Cc * d->W; p[L_ALOG] = d->H; p[L_DTB] = d->H; p[L_ON] = d->KD; p[L_O] = (long)D * d->VDt; p[L_N2] = D;
+            p[L_W1] = (long)d->F * D; p[L_W2] = (long)d->F * D; p[L_W3] = (long)D * d->F;
+        } else {
         p[L_N1] = D; p[L_Q] = (long)d->KDt * D; p[L_K] = (long)d->KDt * D; p[L_V] = (long)d->VDt * D; p[L_B] = (long)d->KDt * D;
         p[L_W] = (long)d->VDt * D; p[L_F1] = (long)d->Hv * D; p[L_G1] = (long)d->Hv * D;
         p[L_QC] = (long)d->KDt * d->W; p[L_KC] = (long)d->KDt * d->W; p[L_VC] = (long)d->VDt * d->W;
         p[L_F2] = (long)d->KDt * d->Hv; p[L_ALOG] = d->H; p[L_DTB] = d->KDt; p[L_G2] = (long)d->VDt * d->Hv; p[L_G2B] = d->VDt;
         p[L_ON] = d->KD; p[L_O] = (long)D * d->VDt; p[L_N2] = D;
         p[L_W1] = (long)d->F * D; p[L_W2] = (long)d->F * D; p[L_W3] = (long)D * d->F;
+        }
         if (d->has_mem[i]) {
             p[L_MQ] = (long)d->dm * D; p[L_MK] = (long)d->dm * D; p[L_MV] = (long)D * D; p[L_MB] = (long)d->nmb * D; p[L_MBB] = d->nmb;
         }
@@ -255,6 +279,10 @@ typedef struct {
     int *tr_Tr, *tr_Tm, *tr_start, tr_cap;   // per piece of the recorded training forward (grown on demand)
     const uint8_t* tr_reset;  // [nseg, B] device, or NULL
     float* tr_grad;           // flat grad buffer of the recorded training forward
+    // hybrid (layer-major) call in progress: armt_hy_begin .. armt_hy_head (.. backward)
+    int hy_active, hy_train, hy_np, hy_nw;
+    int* hy_w;                // per piece: index among the pieces with memory tokens, or -1
+    void* hy_args;            // a copy of the ArmtForwardArgs of armt_hy_begin
 } Ctx;
 
 #define BF(c, id, T, n) ((T*)ensure(&(c)->buf[id], (size_t)(n) * sizeof(T)))
@@ -579,11 +607,24 @@ __global__ void k_embed_bwd(const float* dx, const int64_t* ids, int ids_ld, int
     for (int d = threadIdx.x; d < D; d += blockDim.x) atomicAdd(dst + d, src[d]);
 }
 
+// hybrid: rows of one piece [B, T1, D] <-> the real tokens [B, T, D] (rows start .. start + Tr) and its memory tokens
+// [B, nw, Tm, D] (index w). to_x: x = src (memory rows without a source: 0); else dst = x * scale.
+__global__ void k_hy_copy(float* x, float* real, float* mem, int T, int start, int Tr, int Tm, int nw, int w, int D, int to_x, float scale,
+                          const float* gscale) {
+    int row = blockIdx.x, T1 = Tr + Tm, b = row / T1, t = row % T1;
+    float* xr = x + (long)row * D;
+    float* o = t < Tr ? real + ((long)b * T + start + t) * D : (mem ? mem + (((long)b * nw + w) * Tm + (t - Tr)) * D : NULL);
+    if (gscale) scale *= *gscale;
+    if (to_x) { for (int d = threadIdx.x; d < D; d += blockDim.x) xr[d] = o ? o[d] : 0.f; }
+    else if (o) { for (int d = threadIdx.x; d < D; d += blockDim.x) o[d] = xr[d] * scale; }
+}
+
 // ---------------------------------------------------------------- rmsnorm
 // xo = xa (+ xb) (+ num/den per memory head); h = xo * rsqrt(mean(xo^2)+eps) * w.  Row r of the output reads source row
 // map(r) = (r / rpb_dst) * rpb_src + r % rpb_dst (to normalize only the real rows of a [B, T1] block).
 __global__ void k_rmsnorm(float* __restrict__ xo, const float* __restrict__ xa, const floatX* __restrict__ xb, const float* __restrict__ num, const float* __restrict__ den, int Hm,
-                          floatX* __restrict__ h, float* __restrict__ rstd, const float* __restrict__ w, int D, float eps, int rpb_dst, int rpb_src) {
+                          floatX* __restrict__ h, float* __restrict__ rstd, const float* __restrict__ w, int D, float eps, int rpb_dst, int rpb_src,
+                          float woff) {
     int r = blockIdx.x;
     long src = (long)(r / rpb_dst) * rpb_src + r % rpb_dst;
     const float* a = xa + src * D;
@@ -602,11 +643,11 @@ __global__ void k_rmsnorm(float* __restrict__ xo, const float* __restrict__ xa, 
     if (threadIdx.x == 0 && rstd) rstd[r] = rs;
     const float* xv = o ? o : a;
     floatX* hr = h + (long)r * D;
-    for (int d = threadIdx.x; d < D; d += blockDim.x) stX(hr + d, xv[d] * rs * w[d]);
+    for (int d = threadIdx.x; d < D; d += blockDim.x) stX(hr + d, xv[d] * rs * (w[d] + woff));
 }
 // dx[map(r)] += rstd*(dxh - xh*mean(dxh*xh)), dxh = dy*w, xh = x*rstd ; dw += sum_r dy*xh. grid-stride rows.
 __global__ void k_rmsnorm_bwd(float* __restrict__ dx, const floatX* __restrict__ dy, const float* __restrict__ x, const float* __restrict__ rstd, const float* __restrict__ w, float* __restrict__ dw,
-                              int R, int D, int rpb_dst, int rpb_src) {
+                              int R, int D, int rpb_dst, int rpb_src, float woff) {
     extern __shared__ float sdw[];
     for (int d = threadIdx.x; d < D; d += blockDim.x) sdw[d] = 0.f;
     for (int r = blockIdx.x; r < R; r += gridDim.x) {
@@ -614,12 +655,12 @@ __global__ void k_rmsnorm_bwd(float* __restrict__ dx, const floatX* __restrict__
         const float* xr = x + src * D;
         const floatX* dyr = dy + (long)r * D;
         float rs = rstd[r], acc = 0.f;
-        for (int d = threadIdx.x; d < D; d += blockDim.x) { float xh = xr[d] * rs; acc += toF(dyr[d]) * w[d] * xh; }
+        for (int d = threadIdx.x; d < D; d += blockDim.x) { float xh = xr[d] * rs; acc += toF(dyr[d]) * (w[d] + woff) * xh; }
         acc = block_sum(acc) / D;
         float* dxr = dx + src * D;
         for (int d = threadIdx.x; d < D; d += blockDim.x) {
             float g = toF(dyr[d]), xh = xr[d] * rs;
-            dxr[d] += rs * (g * w[d] - xh * acc);
+            dxr[d] += rs * (g * (w[d] + woff) - xh * acc);
             sdw[d] += g * xh;
         }
     }
@@ -842,12 +883,14 @@ static __device__ __forceinline__ void conv_vec(float* acc, const T* P, int NP, 
         for (int j = 0; j < V; j++) acc[j] += w[j * W + i] * x[j];
     }
 }
-template <int KD>
+// SG (Qwen3.5): one beta and one gate input per head, at columns ob + h and oa + h of P (dt_bias per head); beta is both
+// the b and the w of the GDN-2 recurrence and the gate is the same for all channels of the head.
+template <int KD, bool SG>
 __global__ void k_prep_fwd(const floatX* __restrict__ P, int NP, const floatX* __restrict__ fb,
                            const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv, const float* __restrict__ cs_in,
                            const float* __restrict__ A_log, const float* __restrict__ dtb,
                            floatS* __restrict__ cq, floatS* __restrict__ ck, float* __restrict__ cg, floatS* __restrict__ cb, floatS* __restrict__ cwv,
-                           int B, int Tr, int Tm, int H, int nr, int nch, int W, float qscale) {
+                           int B, int Tr, int Tm, int H, int nr, int nch, int W, float qscale, int ob, int oa) {
     // one warp per run of PRUN consecutive chunk positions of one (b, h); the conv inputs slide through registers (W = 4)
     constexpr int V = KD / 32, PRUN = 8, CW = 4;
     long gw = (long)blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
@@ -915,13 +958,19 @@ __global__ void k_prep_fwd(const floatX* __restrict__ P, int NP, const floatX* _
         sq = warp_sum(sq); sk = warp_sum(sk);
         float iq = qscale / sqrtf(sq + 1e-6f), ik = 1.f / sqrtf(sk + 1e-6f);
         float bb[V], ww[V], f[V], g[V];
-        ldv<V>(P + row * NP + 3 * KDt + ch, bb);
-        ldv<V>(P + row * NP + 4 * KDt + ch, ww);
-        ldv<V>(fb + row * KDt + ch, f);
+        if constexpr (SG) {
+            float bs = sigm(toF(P[row * NP + ob + h])), gs = -ea * softplus(toF(P[row * NP + oa + h]) + dtb[h]);
 #pragma unroll
-        for (int j = 0; j < V; j++) {
-            y[0][j] *= iq; y[1][j] *= ik; bb[j] = sigm(bb[j]); ww[j] = sigm(ww[j]) * y[2][j];
-            g[j] = -ea * softplus(f[j] + dtb[ch + j]);
+            for (int j = 0; j < V; j++) { y[0][j] *= iq; y[1][j] *= ik; bb[j] = bs; ww[j] = bs * y[2][j]; g[j] = gs; }
+        } else {
+            ldv<V>(P + row * NP + 3 * KDt + ch, bb);
+            ldv<V>(P + row * NP + 4 * KDt + ch, ww);
+            ldv<V>(fb + row * KDt + ch, f);
+#pragma unroll
+            for (int j = 0; j < V; j++) {
+                y[0][j] *= iq; y[1][j] *= ik; bb[j] = sigm(bb[j]); ww[j] = sigm(ww[j]) * y[2][j];
+                g[j] = -ea * softplus(f[j] + dtb[ch + j]);
+            }
         }
         stv<V>(cq + o, y[0]); stv<V>(ck + o, y[1]); stv<V>(cb + o, bb); stv<V>(cwv + o, ww); stv<V>(cg + o, g);
     }
@@ -937,13 +986,13 @@ __global__ void k_conv_state(float* __restrict__ cs_out, const float* __restrict
 }
 // backward 1: per (h, block of rows): recompute conv/silu/norms, chunk grads -> dc (pre-silu conv grads, token-major
 // [N, Cc]), dP (b, w gate columns), df ; accumulates dA_log, ddt_bias.
-template <int KD>
+template <int KD, bool SG>
 __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__ P, int NP, const floatX* __restrict__ fb,
                             const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv, const float* __restrict__ cs_in,
                             const float* __restrict__ A_log, const float* __restrict__ dtb,
                             const floatS* __restrict__ dq, const floatS* __restrict__ dk, const floatS* __restrict__ db, const floatS* __restrict__ dg, const floatS* __restrict__ dwv,
                             floatS* __restrict__ dc, floatX* __restrict__ dP, floatX* __restrict__ df, float* __restrict__ dAlog, float* __restrict__ ddtb,
-                            int B, int Tr, int Tm, int H, int nr, int nch, int W, float qscale, int rows_per_block) {
+                            int B, int Tr, int Tm, int H, int nr, int nch, int W, float qscale, int rows_per_block, int ob, int oa) {
     constexpr int V = KD / 32;
     int h = blockIdx.x, lane = threadIdx.x & 31, wl = threadIdx.x >> 5, nw = blockDim.x >> 5;
     int T1 = Tr + Tm, KDt = H * KD, Cc = 3 * KDt, N = B * T1, ch = h * KD + lane * V;
@@ -970,15 +1019,34 @@ __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__
         for (int j = 0; j < V; j++) { gq[j] *= qscale; dotq += q[j] / nq * gq[j]; dotk += k[j] / nk * gk[j]; }
         dotq = warp_sum(dotq); dotk = warp_sum(dotk);
         float bb[V], ww[V], f[V], o_dc[V], o_b[V], o_w[V], o_f[V];
-        ldv<V>(P + ri * NP + 3 * KDt + ch, bb);
-        ldv<V>(P + ri * NP + 4 * KDt + ch, ww);
-        ldv<V>(fb + ri * KDt + ch, f);
+        if constexpr (!SG) {
+            ldv<V>(P + ri * NP + 3 * KDt + ch, bb);
+            ldv<V>(P + ri * NP + 4 * KDt + ch, ww);
+            ldv<V>(fb + ri * KDt + ch, f);
+        }
 #pragma unroll
         for (int j = 0; j < V; j++) o_dc[j] = (gq[j] - q[j] / nq * dotq) / nq * dsilu(cq[j]);
         stv<V>(dc + ri * Cc + ch, o_dc);
 #pragma unroll
         for (int j = 0; j < V; j++) o_dc[j] = (gk[j] - k[j] / nk * dotk) / nk * dsilu(ckk[j]);
         stv<V>(dc + ri * Cc + KDt + ch, o_dc);
+        if constexpr (SG) {
+            // beta enters as b (with k) and as w (with v); the gate is shared by the head's channels: sum over channels
+            float bs = sigm(toF(P[ri * NP + ob + h])), x = toF(P[ri * NP + oa + h]) + dtb[h], sb = 0.f, sg = 0.f;
+#pragma unroll
+            for (int j = 0; j < V; j++) {
+                o_dc[j] = gwv[j] * bs * dsilu(cv[j]);
+                sb += gb[j] + gwv[j] * silu(cv[j]);
+                sg += gg[j];
+            }
+            stv<V>(dc + ri * Cc + 2 * KDt + ch, o_dc);
+            acc_A += sg * (-ea * softplus(x));
+            float dfs = sg * (-ea) * (x > 20.f ? 1.f : sigm(x));
+            acc_dtb[0] += dfs;
+            sb = warp_sum(sb); dfs = warp_sum(dfs);
+            if (lane == 0) { stX(dP + ri * NP + ob + h, sb * bs * (1.f - bs)); stX(dP + ri * NP + oa + h, dfs); }
+            continue;
+        }
 #pragma unroll
         for (int j = 0; j < V; j++) {
             float bs = sigm(bb[j]), ws = sigm(ww[j]);
@@ -1002,6 +1070,14 @@ __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__
     for (int j = 0; j < V; j++) sred[wl * KD + lane * V + j] = acc_dtb[j];
     __syncthreads();
     if (threadIdx.x == 0) { float s = 0.f; for (int w = 0; w < nw; w++) s += sred[8 * KD + w]; atomicAdd(dAlog + h, s); }
+    if constexpr (SG) {   // dt_bias per head: every lane's acc_dtb[0] is a partial sum (sred[w * KD + lane * V] holds it)
+        if (threadIdx.x == 0) {
+            float s = 0.f;
+            for (int w = 0; w < nw; w++) for (int l = 0; l < 32; l++) s += sred[w * KD + l * V];
+            atomicAdd(ddtb + h, s);
+        }
+        return;
+    }
     for (int c = threadIdx.x; c < KD; c += blockDim.x) {
         float s = 0.f;
         for (int w = 0; w < nw; w++) s += sred[w * KD + c];
@@ -1059,7 +1135,8 @@ __global__ void __launch_bounds__(128) k_prep_bwd2(const floatX* __restrict__ P,
 // ---------------------------------------------------------------- gated output norm
 template <int KD>
 __global__ void k_onorm_fwd(const floatS* __restrict__ co, const floatX* __restrict__ gg, const float* __restrict__ g2b, const float* __restrict__ won, floatX* __restrict__ on, float* __restrict__ rstd,
-                            int B, int Tr, int Tm, int H, int nr, int nch, float eps, int swish) {
+                            int B, int Tr, int Tm, int H, int nr, int nch, float eps, int swish, int ldg) {
+    // gg: the gate input, row stride ldg (VDt, or NP when it is read from the packed projection); g2b may be NULL
     constexpr int V = KD / 32;
     long gw = (long)blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
     int lane = threadIdx.x & 31, T1 = Tr + Tm;
@@ -1069,7 +1146,7 @@ __global__ void k_onorm_fwd(const floatS* __restrict__ co, const floatX* __restr
     int VDt = H * KD, c0 = lane * V, ch = h * KD + c0;
     float x[V], g[V], y[V], ss = 0.f;
     ldv<V>(co + o, x);
-    ldv<V>(gg + row * VDt + ch, g);
+    ldv<V>(gg + row * ldg + ch, g);
 #pragma unroll
     for (int j = 0; j < V; j++) ss += x[j] * x[j];
     ss = warp_sum(ss);
@@ -1077,7 +1154,7 @@ __global__ void k_onorm_fwd(const floatS* __restrict__ co, const floatX* __restr
     if (lane == 0) rstd[gw] = rs;
 #pragma unroll
     for (int j = 0; j < V; j++) {
-        float gv = g[j] + g2b[ch + j];
+        float gv = g[j] + (g2b ? g2b[ch + j] : 0.f);
         float a = swish ? gv * sigm(gv) : sigm(gv);
         y[j] = x[j] * rs * won[c0 + j] * a;
     }
@@ -1087,7 +1164,7 @@ __global__ void k_onorm_fwd(const floatS* __restrict__ co, const floatX* __restr
 template <int KD>
 __global__ void k_onorm_bwd(const floatS* __restrict__ co, const floatX* __restrict__ gg, const float* __restrict__ g2b, const float* __restrict__ won, const floatX* __restrict__ don,
                             floatS* __restrict__ dco, floatX* __restrict__ dgg, float* __restrict__ dwon, float* __restrict__ dg2b,
-                            int B, int Tr, int Tm, int H, int nr, int nch, float eps, int swish, int per_block) {
+                            int B, int Tr, int Tm, int H, int nr, int nch, float eps, int swish, int per_block, int ldg) {
     constexpr int V = KD / 32;
     int h = blockIdx.x, lane = threadIdx.x & 31, wl = threadIdx.x >> 5, nw = blockDim.x >> 5;
     int T1 = Tr + Tm, npos = nch * CH, VDt = H * KD, c0 = lane * V, ch = h * KD + c0;
@@ -1102,14 +1179,14 @@ __global__ void k_onorm_bwd(const floatS* __restrict__ co, const floatX* __restr
         if (t < 0) { float z[V] = {}; stv<V>(dco + o, z); continue; }
         long row = (long)b * T1 + t;
         float x[V], g[V], d[V], dxh[V], dgo[V], ss = 0.f, dot = 0.f;
-        ldv<V>(co + o, x); ldv<V>(gg + row * VDt + ch, g); ldv<V>(don + row * VDt + ch, d);
+        ldv<V>(co + o, x); ldv<V>(gg + row * ldg + ch, g); ldv<V>(don + row * VDt + ch, d);
 #pragma unroll
         for (int j = 0; j < V; j++) ss += x[j] * x[j];
         ss = warp_sum(ss);
         float rs = rsqrtf(ss / KD + eps);
 #pragma unroll
         for (int j = 0; j < V; j++) {
-            float gv = g[j] + g2b[ch + j], s = sigm(gv);
+            float gv = g[j] + (g2b ? g2b[ch + j] : 0.f), s = sigm(gv);
             float a = swish ? gv * s : s, da = swish ? s * (1.f + gv * (1.f - s)) : s * (1.f - s);
             float xh = x[j] * rs;
             dxh[j] = d[j] * won[c0 + j] * a;
@@ -1118,7 +1195,7 @@ __global__ void k_onorm_bwd(const floatS* __restrict__ co, const floatX* __restr
             aw[j] += d[j] * xh * a;
             ab[j] += dgo[j];
         }
-        stv<V>(dgg + row * VDt + ch, dgo);
+        stv<V>(dgg + row * ldg + ch, dgo);
         dot = warp_sum(dot) / KD;
 #pragma unroll
         for (int j = 0; j < V; j++) dxh[j] = rs * (dxh[j] - x[j] * rs * dot);
@@ -2107,27 +2184,38 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
         for (int h = 0; h < d.Hm; h++)   // num[b] = phi[b] W[b]
             mm(c, 0, 0, s.T1, dvh, dkh, 1.f, phiq + h * dkh, F32, d.dk, (long long)s.T1 * d.dk, st_in->Wm + (long)h * dkh * dvh, F32, dvh,
                (long long)d.dk * D / d.Hm, 0.f, numq + h * dvh, F32, D, (long long)s.T1 * D, s.B);
-        k_rmsnorm<<<N, 256, 0, c->stream>>>(xr, x, NULL, numq, denq, d.Hm, h1, rstd1, PP(c, PI(li, L_N1)), D, eps, 1, 1);
+        k_rmsnorm<<<N, 256, 0, c->stream>>>(xr, x, NULL, numq, denq, d.Hm, h1, rstd1, PP(c, PI(li, L_N1)), D, eps, 1, 1, d.woff);
     } else {
         CK(cudaMemcpyAsync(xr, x, (size_t)N * D * 4, cudaMemcpyDeviceToDevice, c->stream));
-        k_rmsnorm<<<N, 256, 0, c->stream>>>(NULL, x, NULL, NULL, NULL, 1, h1, rstd1, PP(c, PI(li, L_N1)), D, eps, 1, 1);
+        k_rmsnorm<<<N, 256, 0, c->stream>>>(NULL, x, NULL, NULL, NULL, 1, h1, rstd1, PP(c, PI(li, L_N1)), D, eps, 1, 1, d.woff);
     }
     // 2. projections
     floatX *P = BF(c, B_P, floatX, (long)N * NP), *fb = BF(c, B_FB, floatX, (long)N * KDt), *gg = BF(c, B_GG, floatX, (long)N * VDt);
     lin(c, P, NP, h1, D, c->w_in[li], N, NP, D, 0.f);
     int of1 = 3 * KDt + 2 * VDt, og1 = of1 + Hv;
-    lin(c, fb, KDt, P + of1, NP, c->w_f2[li], N, KDt, Hv, 0.f);
-    lin(c, gg, VDt, P + og1, NP, c->w_g2[li], N, VDt, Hv, 0.f);
+    if (!d.sg) {   // GDN-2: low-rank gate input and output gate (Qwen3.5: a and z come straight out of P)
+        lin(c, fb, KDt, P + of1, NP, c->w_f2[li], N, KDt, Hv, 0.f);
+        lin(c, gg, VDt, P + og1, NP, c->w_g2[li], N, VDt, Hv, 0.f);
+    }
     // 3. conv / gates -> chunk-major scan inputs ; carried conv state
     long CSK = s.nchB * CH * KD;
     floatS *cq = BF(c, B_CQ, floatS, CSK), *ck = BF(c, B_CK, floatS, CSK), *cb = BF(c, B_CB, floatS, CSK), *cwv = BF(c, B_CWV, floatS, CSK);
     float* cg = BF(c, B_CG, float, CSK);
-    const float* wconv = PP(c, PI(li, L_QC));   // q, k, v conv weights are contiguous only in the grad layout: pass separately
+    // q, k, v conv weights (GDN-2: separate tensors, contiguous only in the grad layout; Qwen3.5: one tensor)
+    const float* wq = PP(c, PI(li, L_QC));
+    const float* wk = d.sg ? wq + (long)KDt * d.W : PP(c, PI(li, L_KC));
+    const float* wv = d.sg ? wq + 2L * KDt * d.W : PP(c, PI(li, L_VC));
     if (d.W != 4) armt_fail("conv_size must be 4");
     long nwarps = s.nchB * CH / 8;   // runs of 8 positions (CH is a multiple of 8)
-    k_prep_fwd<KD><<<(unsigned)((nwarps + 7) / 8), 256, 0, c->stream>>>(P, NP, fb, wconv, PP(c, PI(li, L_KC)), PP(c, PI(li, L_VC)), st_in->cs,
-                                                                       PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)), cq, ck, cg, cb, cwv,
-                                                                       s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD));
+    unsigned npb = (unsigned)((nwarps + 7) / 8);
+    if (d.sg)
+        k_prep_fwd<KD, true><<<npb, 256, 0, c->stream>>>(P, NP, NULL, wq, wk, wv, st_in->cs, PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)),
+                                                          cq, ck, cg, cb, cwv, s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD),
+                                                          d.ob, d.oa);
+    else
+        k_prep_fwd<KD, false><<<npb, 256, 0, c->stream>>>(P, NP, fb, wq, wk, wv, st_in->cs, PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)),
+                                                           cq, ck, cg, cb, cwv, s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD),
+                                                           0, 0);
     int Pc = (s.Tm == 0 || d.c.mem_in_stream) ? s.T1 : s.Tr;
     int ncarry = (s.Tm == 0 || d.c.mem_in_stream) ? s.nch : s.nr;
     if (st_out && st_out->cs) {
@@ -2141,12 +2229,13 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
     floatX *on = BF(c, B_ON, floatX, (long)N * VDt), *ao = BF(c, B_AO, floatX, (long)N * D);
     float* rstdo = BF(c, B_RSTDO, float, (long)N * d.H);
     long nw2 = (long)N * d.H;
-    k_onorm_fwd<KD><<<(unsigned)((nw2 + 7) / 8), 256, 0, c->stream>>>(BF(c, B_O, floatS, CSK), gg, PP(c, PI(li, L_G2B)), PP(c, PI(li, L_ON)), on,
-                                                                     rstdo, s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, eps, d.c.gate_swish);
+    k_onorm_fwd<KD><<<(unsigned)((nw2 + 7) / 8), 256, 0, c->stream>>>(BF(c, B_O, floatS, CSK), d.sg ? P + d.oz : gg,
+                                                                     d.sg ? NULL : PP(c, PI(li, L_G2B)), PP(c, PI(li, L_ON)), on, rstdo,
+                                                                     s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, eps, d.c.gate_swish, d.sg ? NP : VDt);
     lin(c, ao, D, on, VDt, c->w_o[li], N, D, VDt, 0.f);
     float *xmid = BF(c, B_XMID, float, (long)N * D), *rstd2 = BF(c, B_RSTD2, float, N);
     floatX* h2 = BF(c, B_H2, floatX, (long)N * D);
-    k_rmsnorm<<<N, 256, 0, c->stream>>>(xmid, xr, ao, NULL, NULL, 1, h2, rstd2, PP(c, PI(li, L_N2)), D, eps, 1, 1);
+    k_rmsnorm<<<N, 256, 0, c->stream>>>(xmid, xr, ao, NULL, NULL, 1, h2, rstd2, PP(c, PI(li, L_N2)), D, eps, 1, 1, d.woff);
     // 6. MLP
     floatX *a = BF(c, B_A, floatX, (long)N * 2 * F), *m = BF(c, B_MM, floatX, (long)N * F), *mo = BF(c, B_MO, floatX, (long)N * D);
     lin(c, a, 2 * F, h2, D, c->w_12[li], N, 2 * F, D, 0.f);
@@ -2257,7 +2346,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
     lin_dx(c, dh2, D, da, 2 * F, c->w_12[li], N, 2 * F, D, 0.f);
     lin_dw(c, GPG(c, PI(li, L_W1), PI(li, L_W2)), da, 2 * F, h2, D, N, 2 * F, D);
     float *xmid = BF(c, B_XMID, float, (long)N * D), *rstd2 = BF(c, B_RSTD2, float, N);
-    k_rmsnorm_bwd<<<rb_blocks, 256, D * 4, c->stream>>>(dx, dh2, xmid, rstd2, PP(c, PI(li, L_N2)), GP(c, PI(li, L_N2)), N, D, 1, 1);
+    k_rmsnorm_bwd<<<rb_blocks, 256, D * 4, c->stream>>>(dx, dh2, xmid, rstd2, PP(c, PI(li, L_N2)), GP(c, PI(li, L_N2)), N, D, 1, 1, d.woff);
     // ---- attention backward
 #ifndef ARMT_FP32
     LAUNCH1D(k_cast, (long)N * D, dxX, dx, (long)N * D);
@@ -2275,12 +2364,17 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
         dim3 g(d.H, (unsigned)(((long)s.B * s.nch * CH + per - 1) / per));
         float* gwon = GP(c, PI(li, L_ON)); float* gg2b = GP(c, PI(li, L_G2B));
         float* junk = BF(c, B_ZERO, float, 2 * (long)d.VDt + 64);
-        k_onorm_bwd<KD><<<g, 256, 0, c->stream>>>(BF(c, B_O, floatS, CSK), gg, PP(c, PI(li, L_G2B)), PP(c, PI(li, L_ON)), don, dO, dgg,
-                                                 gwon ? gwon : junk, gg2b ? gg2b : junk, s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, eps, d.c.gate_swish, per);
+        // Qwen3.5: the gate input is z, columns [oz, oz + VDt) of P: its gradient goes straight into dP
+        k_onorm_bwd<KD><<<g, 256, 0, c->stream>>>(BF(c, B_O, floatS, CSK), d.sg ? P + d.oz : gg, d.sg ? NULL : PP(c, PI(li, L_G2B)),
+                                                 PP(c, PI(li, L_ON)), don, dO, d.sg ? dP + d.oz : dgg, gwon ? gwon : junk,
+                                                 (!d.sg && gg2b) ? gg2b : junk, s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, eps, d.c.gate_swish, per,
+                                                 d.sg ? NP : VDt);
     }
     int of1 = 3 * KDt + 2 * VDt, og1 = of1 + Hv;
-    lin_dx(c, dP + og1, NP, dgg, VDt, c->w_g2[li], N, VDt, Hv, 0.f);
-    lin_dw(c, GP(c, PI(li, L_G2)), dgg, VDt, P + og1, NP, N, VDt, Hv);
+    if (!d.sg) {
+        lin_dx(c, dP + og1, NP, dgg, VDt, c->w_g2[li], N, VDt, Hv, 0.f);
+        lin_dw(c, GP(c, PI(li, L_G2)), dgg, VDt, P + og1, NP, N, VDt, Hv);
+    }
     int Pc = (s.Tm == 0 || d.c.mem_in_stream) ? s.T1 : s.Tr;
     int ncarry = (s.Tm == 0 || d.c.mem_in_stream) ? s.nch : s.nr;
     scan_bwd<KD>(c, s, dst->S, dst->S, ncarry);
@@ -2290,21 +2384,35 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
         dim3 g(d.H, (N + rpb - 1) / rpb);
         float* gA = GP(c, PI(li, L_ALOG)); float* gdt = GP(c, PI(li, L_DTB));
         float* junk = BF(c, B_ZERO, float, 2 * (long)d.VDt + 64);
-        k_prep_bwd1<KD><<<g, 256, 0, c->stream>>>(P, NP, fb, PP(c, PI(li, L_QC)), PP(c, PI(li, L_KC)), PP(c, PI(li, L_VC)), st_in->cs,
-                                                 PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)),
-                                                 BF(c, B_DQ, floatS, CSK), BF(c, B_DK, floatS, CSK), BF(c, B_DB, floatS, CSK), BF(c, B_DG, floatS, CSK),
-                                                 BF(c, B_DWV, floatS, CSK), dc, dP, df, gA ? gA : junk, gdt ? gdt : junk,
-                                                 s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD), rpb);
+        const float* wq = PP(c, PI(li, L_QC));
+        const float* wk = d.sg ? wq + (long)KDt * d.W : PP(c, PI(li, L_KC));
+        const float* wv = d.sg ? wq + 2L * KDt * d.W : PP(c, PI(li, L_VC));
+        floatS *gq = BF(c, B_DQ, floatS, CSK), *gk = BF(c, B_DK, floatS, CSK), *gb = BF(c, B_DB, floatS, CSK), *gG = BF(c, B_DG, floatS, CSK);
+        floatS* gwv = BF(c, B_DWV, floatS, CSK);
+        if (d.sg)
+            k_prep_bwd1<KD, true><<<g, 256, 0, c->stream>>>(P, NP, NULL, wq, wk, wv, st_in->cs, PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)),
+                                                             gq, gk, gb, gG, gwv, dc, dP, NULL, gA ? gA : junk, gdt ? gdt : junk,
+                                                             s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD), rpb, d.ob, d.oa);
+        else
+            k_prep_bwd1<KD, false><<<g, 256, 0, c->stream>>>(P, NP, fb, wq, wk, wv, st_in->cs, PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)),
+                                                              gq, gk, gb, gG, gwv, dc, dP, df, gA ? gA : junk, gdt ? gdt : junk,
+                                                              s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD), rpb, 0, 0);
     }
-    lin_dx(c, dP + of1, NP, df, KDt, c->w_f2[li], N, KDt, Hv, 0.f);
-    lin_dw(c, GP(c, PI(li, L_F2)), df, KDt, P + of1, NP, N, KDt, Hv);
+    if (!d.sg) {
+        lin_dx(c, dP + of1, NP, df, KDt, c->w_f2[li], N, KDt, Hv, 0.f);
+        lin_dw(c, GP(c, PI(li, L_F2)), df, KDt, P + of1, NP, N, KDt, Hv);
+    }
     {
         // conv weights: q, k, v live in separate tensors; their grads are contiguous (L_QC, L_KC, L_VC adjacent in the layout).
         // the kernel wants one [Cc][W] weight array: stage a contiguous copy
-        float* wcat = BF(c, B_WCAT, float, (long)d.Cc * d.W);
-        CK(cudaMemcpyAsync(wcat, PP(c, PI(li, L_QC)), (size_t)KDt * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
-        CK(cudaMemcpyAsync(wcat + (long)KDt * d.W, PP(c, PI(li, L_KC)), (size_t)KDt * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
-        CK(cudaMemcpyAsync(wcat + 2L * KDt * d.W, PP(c, PI(li, L_VC)), (size_t)VDt * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
+        const float* wcat = PP(c, PI(li, L_QC));   // Qwen3.5: already one tensor
+        if (!d.sg) {
+            float* wc = BF(c, B_WCAT, float, (long)d.Cc * d.W);
+            CK(cudaMemcpyAsync(wc, PP(c, PI(li, L_QC)), (size_t)KDt * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
+            CK(cudaMemcpyAsync(wc + (long)KDt * d.W, PP(c, PI(li, L_KC)), (size_t)KDt * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
+            CK(cudaMemcpyAsync(wc + 2L * KDt * d.W, PP(c, PI(li, L_VC)), (size_t)VDt * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
+            wcat = wc;
+        }
         float* dcs_tmp = BF(c, B_DCSTMP, float, (long)s.B * d.Cc * d.W);
         float* gconv = GPG(c, PI(li, L_QC), PI(li, L_VC));
         float* junk = gconv ? gconv : BF(c, B_CSTMP, float, (long)s.B * d.Cc * d.W + (long)d.Cc * d.W);
@@ -2316,7 +2424,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
     lin_dx(c, dh1, D, dP, NP, c->w_in[li], N, NP, D, 0.f);
     lin_dw(c, GPG(c, PI(li, L_Q), PI(li, L_G1)), dP, NP, h1, D, N, NP, D);
     float *xr = BF(c, B_XR, float, (long)N * D), *rstd1 = BF(c, B_RSTD1, float, N);
-    k_rmsnorm_bwd<<<rb_blocks, 256, D * 4, c->stream>>>(dx, dh1, xr, rstd1, PP(c, PI(li, L_N1)), GP(c, PI(li, L_N1)), N, D, 1, 1);
+    k_rmsnorm_bwd<<<rb_blocks, 256, D * 4, c->stream>>>(dx, dh1, xr, rstd1, PP(c, PI(li, L_N1)), GP(c, PI(li, L_N1)), N, D, 1, 1, d.woff);
     // ---- memory read backward
     if (mem) {
         float *mq = BF(c, B_MQ, float, (long)N * d.dm), *phiq = BF(c, B_PHIQ, float, (long)N * d.dk), *denq = BF(c, B_DENQ, float, (long)N * d.Hm);
@@ -2343,23 +2451,25 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
 // =============================================================================================== host: weights
 static void pack_weights(Ctx* c) {
     Dims& d = c->d;
-    // packed floatX buffer: per layer w_in [NP x D], f2, g2, o, w12, w3 ; lm_head
-    long per = (long)d.NP * d.D + (long)d.KDt * d.Hv + (long)d.VDt * d.Hv + (long)d.D * d.VDt + 2L * d.F * d.D + (long)d.D * d.F;
-    long tot = per * d.L + (long)d.V * d.D;
-    floatX* p = BF(c, B_PACK, floatX, tot);
+    // packed floatX buffer: per layer w_in [NP x D] (= the parameters L_Q .. L_G1 in order), f2, g2, o, w12, w3 ; lm_head.
+    // Empty slots (Qwen3.5) and attention layers (no parameters here) take no space.
     const int maxn = 32 * MAXL;
     const float* src[maxn]; floatX* dst[maxn]; long n[maxn];
     int cnt = 0;
+    long tot = (long)d.V * d.D;
+    for (int i = 0; i < d.L; i++)
+        for (int j = L_Q; j <= L_W3; j++) if (j != L_QC && j != L_KC && j != L_VC && j != L_ALOG && j != L_DTB && j != L_G2B && j != L_ON && j != L_N2)
+            tot += d.numel[PI(i, j)];
+    floatX* p = BF(c, B_PACK, floatX, tot);
+    auto add = [&](int idx) { if (d.numel[idx]) { src[cnt] = PP(c, idx); dst[cnt] = p; n[cnt] = d.numel[idx]; p += n[cnt]; cnt++; } };
     for (int i = 0; i < d.L; i++) {
         c->w_in[i] = p;
-        for (int j = L_Q; j <= L_G1; j++) { src[cnt] = PP(c, PI(i, j)); dst[cnt] = p; n[cnt] = d.numel[PI(i, j)]; p += n[cnt]; cnt++; }
-        c->w_f2[i] = p; src[cnt] = PP(c, PI(i, L_F2)); dst[cnt] = p; n[cnt] = d.numel[PI(i, L_F2)]; p += n[cnt]; cnt++;
-        c->w_g2[i] = p; src[cnt] = PP(c, PI(i, L_G2)); dst[cnt] = p; n[cnt] = d.numel[PI(i, L_G2)]; p += n[cnt]; cnt++;
-        c->w_o[i] = p; src[cnt] = PP(c, PI(i, L_O)); dst[cnt] = p; n[cnt] = d.numel[PI(i, L_O)]; p += n[cnt]; cnt++;
-        c->w_12[i] = p;
-        src[cnt] = PP(c, PI(i, L_W1)); dst[cnt] = p; n[cnt] = d.numel[PI(i, L_W1)]; p += n[cnt]; cnt++;
-        src[cnt] = PP(c, PI(i, L_W2)); dst[cnt] = p; n[cnt] = d.numel[PI(i, L_W2)]; p += n[cnt]; cnt++;
-        c->w_3[i] = p; src[cnt] = PP(c, PI(i, L_W3)); dst[cnt] = p; n[cnt] = d.numel[PI(i, L_W3)]; p += n[cnt]; cnt++;
+        for (int j = L_Q; j <= L_G1; j++) add(PI(i, j));
+        c->w_f2[i] = p; add(PI(i, L_F2));
+        c->w_g2[i] = p; add(PI(i, L_G2));
+        c->w_o[i] = p; add(PI(i, L_O));
+        c->w_12[i] = p; add(PI(i, L_W1)); add(PI(i, L_W2));
+        c->w_3[i] = p; add(PI(i, L_W3));
     }
     c->w_lm = p; src[cnt] = d.c.tie_emb ? PP(c, P_EMB) : PP(c, P_LMHEAD); dst[cnt] = p; n[cnt] = (long)d.V * d.D; p += n[cnt]; cnt++;
     // descriptor table to device
@@ -2386,7 +2496,7 @@ static void head(Ctx* c, const Step& s, const float* x, int start, int T, const 
     int D = d.D, V = d.V, R = s.B * s.Tr;
     floatX* hf = BF(c, B_HF, floatX, (long)R * D);
     float* rstdf = BF(c, B_RSTDF, float, R);
-    k_rmsnorm<<<R, 256, 0, c->stream>>>(NULL, x, NULL, NULL, NULL, 1, hf, rstdf, PP(c, P_NORMF), D, d.c.norm_eps, s.Tr, s.T1);
+    k_rmsnorm<<<R, 256, 0, c->stream>>>(NULL, x, NULL, NULL, NULL, 1, hf, rstdf, PP(c, P_NORMF), D, d.c.norm_eps, s.Tr, s.T1, d.woff);
     int64_t* tgt = BF(c, B_TGT, int64_t, R);
     if (labels) k_targets<<<(R + 255) / 256, 256, 0, c->stream>>>(tgt, labels, s.B, s.Tr, T, start);
     if (logits && !logits_last) {
@@ -2397,7 +2507,9 @@ static void head(Ctx* c, const Step& s, const float* x, int start, int T, const 
     if (logits && logits_last && is_last_piece)
         mm(c, 0, 1, 1, V, D, 1.f, hf + (long)(s.Tr - 1) * D, CUDA_X, D, (long long)s.Tr * D, c->w_lm, CUDA_X, D, 0, 0.f, logits, F32, V, V, s.B);
     if (labels && (dxo || !logits || logits_last)) {
-        int LC = 4096;
+        // rows per logits chunk: 4096, fewer for a large vocabulary (the chunk buffer stays <= 512 MB: 1024 rows at 248k)
+        int LC = (int)(((256L << 20) / V) & ~255L);
+        LC = LC > 4096 ? 4096 : (LC < 256 ? 256 : LC);
         floatX* lg = BF(c, B_LOGITS, floatX, (long)LC * V);
         floatX* dhf = dxo ? BF(c, B_DHF, floatX, (long)R * D) : NULL;
         for (int r0 = 0; r0 < R; r0 += LC) {
@@ -2410,7 +2522,7 @@ static void head(Ctx* c, const Step& s, const float* x, int start, int T, const 
                 if (gl) mm(c, 1, 0, V, D, rn, 1.f, lg, CUDA_X, V, 0, hf + (long)r0 * D, CUDA_X, D, 0, 1.f, gl, F32, D, 0, 1);
             }
         }
-        if (dxo) k_rmsnorm_bwd<<<2 * c->sms, 256, D * 4, c->stream>>>(dxo, dhf, x, rstdf, PP(c, P_NORMF), GP(c, P_NORMF), R, D, s.Tr, s.T1);
+        if (dxo) k_rmsnorm_bwd<<<2 * c->sms, 256, D * 4, c->stream>>>(dxo, dhf, x, rstdf, PP(c, P_NORMF), GP(c, P_NORMF), R, D, s.Tr, s.T1, d.woff);
     }
 }
 
@@ -2444,6 +2556,7 @@ API void* armt_create(const ArmtConfig* cfg) {
     if (cfg->n_layers > MAXL) armt_fail("at most " + std::to_string(MAXL) + " layers");
     if (cfg->head_dim != 64 && cfg->head_dim != 128) armt_fail("head_dim must be 64 or 128");
     if (cfg->conv_size != 4) armt_fail("conv_size must be 4");
+    if (cfg->kind == 1 && (2 * cfg->n_heads) % (cfg->head_dim / 32)) armt_fail("Qwen3.5 GDN: n_heads must be even for head_dim 128");
     Ctx* c = (Ctx*)calloc(1, sizeof(Ctx));
     make_dims(&c->d, cfg);
     CB(cublasCreate(&c->blas));
@@ -2482,7 +2595,7 @@ API void armt_destroy(void* p) {
     cublasLtDestroy(c->lt);
     cudaFreeHost(c->htab);
     cudaEventDestroy(c->pack_done);
-    free(c->tr_Tr); free(c->tr_Tm); free(c->tr_start); free(c->gmask);
+    free(c->tr_Tr); free(c->tr_Tm); free(c->tr_start); free(c->gmask); free(c->hy_w); free(c->hy_args);
     free(c);
 }
 // which parameters need gradients (1 byte each, canonical order); the others' gradient work is skipped
@@ -2645,10 +2758,275 @@ static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale, int l
     if (gscale && g0 > 0) LAUNCH1D(k_scale, g0, c->grad, g0, gscale);   // the global parameters (embeddings, head, final norm)
 }
 
+// =============================================================================================== hybrid (layer-major)
+// A hybrid backbone (recurrent + attention layers): the attention layers run outside the library (in PyTorch), so a call
+// goes layer by layer over all its segment pieces:
+//   armt_hy_begin(args)       pieces at absolute segment boundaries, weight packing, embeddings (= input of layer 0)
+//   armt_hy_run(lo, hi, ..)   the recurrent layers [lo, hi) over all pieces. The hidden streams go in / out in the format of
+//                             the attention layers: real tokens [B, T, D] and memory tokens [B, nw, M, D] (fp32; nw = the
+//                             pieces that end a segment and write the memory)
+//   armt_hy_head(real)        final norm, logits / token losses / loss (training: also the loss gradient, kept)
+// and, after a training call, its backward in the reverse order:
+//   armt_hy_head_bwd(gscale, d_real)   the head's parameter grads times *gscale; d_real = *gscale * dloss / dreal
+//   armt_hy_run_bwd(lo, hi, ..)        the recurrent layers hi-1 .. lo; lo == 0: also the embeddings, which ends it.
+// Training stores every layer's input per piece (as armt_forward); inference keeps two O(T) hidden buffers (ping-pong) and
+// carries the recurrent / memory states as armt_forward does.
+static ArmtForwardArgs* hya(Ctx* c) { return (ArmtForwardArgs*)c->hy_args; }
+static long hy_xs_per(Ctx* c) { return (long)c->tr_B * c->tr_T1max * c->d.D; }
+static float* hx(Ctx* c, int k, int i) {   // input of layer i (= output of layer i - 1) of piece k
+    long xs_per = hy_xs_per(c);
+    if (c->hy_train) return (float*)c->buf[B_XS].p + xs_per * ((long)k * (c->d.L + 1) + i);
+    return (float*)c->buf[i % 2 ? B_X1 : B_X0].p + xs_per * k;
+}
+static void hy_copy(Ctx* c, int k, float* x, const float* real, const float* mem, int to_x, const float* gscale) {
+    Step s = make_step(c, c->tr_B, c->tr_Tr[k], c->tr_Tm[k]);
+    if (!to_x && !real && !mem) return;
+    k_hy_copy<<<s.N, 256, 0, c->stream>>>(x, (float*)real, (float*)mem, c->tr_T, c->tr_start[k], s.Tr, s.Tm, c->hy_nw, c->hy_w[k], c->d.D,
+                                          to_x, 1.f, gscale);
+}
+
+template <int KD>
+static void hy_begin_impl(Ctx* c, const ArmtForwardArgs* a, int* pieces, int cap, int* np_out) {
+    Dims& d = c->d;
+    int B = a->B, T = a->T, S = d.c.segment_size, D = d.D;
+    if (a->train && (a->position != 0 || a->state)) armt_fail("a training forward must start from an empty state");
+    std::vector<int> pst, pen, ptm;
+    for (int st = 0, pos = a->position; st < T;) {
+        int en = st + S - pos < T ? st + S - pos : T;
+        int done = pos + en - st == S;
+        pst.push_back(st); pen.push_back(en); ptm.push_back(done && d.M > 0 ? d.M : 0);
+        pos = done ? 0 : pos + en - st;
+        st = en;
+    }
+    int np = (int)pst.size();
+    if (a->train) ptm[np - 1] = 0;   // the last memory write feeds nothing that is trained
+    if (np > cap) armt_fail("more pieces than the caller's buffer");
+    if (np > c->tr_cap) {
+        c->tr_cap = np;
+        c->tr_Tr = (int*)realloc(c->tr_Tr, np * sizeof(int)); c->tr_Tm = (int*)realloc(c->tr_Tm, np * sizeof(int));
+        c->tr_start = (int*)realloc(c->tr_start, np * sizeof(int)); c->hy_w = (int*)realloc(c->hy_w, np * sizeof(int));
+    }
+    if (!c->hy_args) c->hy_args = calloc(1, sizeof(ArmtForwardArgs));
+    memcpy(c->hy_args, a, sizeof(ArmtForwardArgs));
+    int T1max = 0, nw = 0;
+    for (int k = 0; k < np; k++) {
+        c->tr_Tr[k] = pen[k] - pst[k]; c->tr_Tm[k] = ptm[k]; c->tr_start[k] = pst[k];
+        c->hy_w[k] = ptm[k] ? nw++ : -1;
+        if (c->tr_Tr[k] + ptm[k] > T1max) T1max = c->tr_Tr[k] + ptm[k];
+        pieces[3 * k] = pst[k]; pieces[3 * k + 1] = c->tr_Tr[k]; pieces[3 * k + 2] = ptm[k];
+    }
+    *np_out = np;
+    c->tr_B = B; c->tr_T = T; c->tr_nseg = np; c->tr_T1max = T1max; c->tr_reset = a->reset;
+    c->hy_np = np; c->hy_nw = nw; c->hy_train = a->train;
+    c->grad = a->train ? a->grad : NULL;
+    if (a->train) c->tr_grad = a->grad;
+    if (a->repack || !c->w_lm) pack_weights(c);
+    long xs_per = hy_xs_per(c);
+    long nS = (long)B * d.H * KD * KD, nCs = (long)B * d.Cc * d.W, nW = (long)B * d.dk * D / d.Hm, nZ = (long)B * d.dk;
+    if (a->train) {
+        BF(c, B_XS, float, xs_per * (d.L + 1) * np);
+        BF(c, B_DXS, float, xs_per * np);
+        float *SS = BF(c, B_ST_S, float, nS * d.L * np), *SCS = BF(c, B_ST_CS, float, nCs * d.L * np);
+        float *SW = BF(c, B_ST_W, float, nW * d.L * np), *SZ = BF(c, B_ST_Z, float, nZ * d.L * np);
+        for (int i = 0; i < d.L; i++) {   // initial (k = 0) state of every recurrent layer
+            if (d.c.attn[i]) continue;
+            long si = (long)i * np;
+            zero(c, SS + nS * si, nS * 4); zero(c, SCS + nCs * si, nCs * 4); zero(c, SW + nW * si, nW * 4); zero(c, SZ + nZ * si, nZ * 4);
+        }
+    } else {
+        BF(c, B_X0, float, xs_per * np); BF(c, B_X1, float, xs_per * np);
+        long nzb = nS > nW ? (nS > nCs ? nS : nCs) : (nW > nCs ? nW : nCs);
+        zero(c, BF(c, B_ZERO, float, nzb), sizeof(float) * nzb);
+    }
+    for (int k = 0; k < np; k++) {
+        Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+        k_embed<<<s.N, 256, 0, c->stream>>>(hx(c, k, 0), a->ids, T, pst[k], PP(c, P_EMB), PP(c, P_MEMTOK), s.Tr, s.Tm, D);
+    }
+    c->hy_active = 1;
+}
+
+template <int KD>
+static void hy_run_impl(Ctx* c, int lo, int hi, const float* real_in, const float* mem_in, float* real_out, float* mem_out) {
+    Dims& d = c->d;
+    const ArmtForwardArgs* a = hya(c);
+    int B = c->tr_B, np = c->hy_np, D = d.D;
+    long nS = (long)B * d.H * KD * KD, nCs = (long)B * d.Cc * d.W, nW = (long)B * d.dk * D / d.Hm, nZ = (long)B * d.dk;
+    if (real_in) for (int k = 0; k < np; k++) hy_copy(c, k, hx(c, k, lo), real_in, mem_in, 1, NULL);
+    float* zbuf = (float*)c->buf[B_ZERO].p;
+    for (int i = lo; i < hi; i++) {
+        if (d.c.attn[i]) armt_fail("armt_hy_run: layer " + std::to_string(i) + " is an attention layer");
+        for (int k = 0; k < np; k++) {
+            Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+            LState in, out;
+            if (c->hy_train) {
+                float *SS = (float*)c->buf[B_ST_S].p, *SCS = (float*)c->buf[B_ST_CS].p, *SW = (float*)c->buf[B_ST_W].p, *SZ = (float*)c->buf[B_ST_Z].p;
+                long si = (long)i * np + k;
+                in = {SS + nS * si, SCS + nCs * si, d.has_mem[i] ? SW + nW * si : NULL, d.has_mem[i] ? SZ + nZ * si : NULL};
+                if (a->reset && k > 0) {
+                    LAUNCH1D(k_mask_zero, nS, in.S, a->reset + (long)k * B, (long)d.H * KD * KD, B);
+                    LAUNCH1D(k_mask_zero, nCs, in.cs, a->reset + (long)k * B, (long)d.Cc * d.W, B);
+                }
+                out = {NULL, NULL, NULL, NULL};
+                if (k + 1 < np) out = {SS + nS * (si + 1), SCS + nCs * (si + 1), d.has_mem[i] ? SW + nW * (si + 1) : NULL, d.has_mem[i] ? SZ + nZ * (si + 1) : NULL};
+            } else {
+                if (a->state) { in.S = a->state[4 * i]; in.cs = a->state[4 * i + 1]; in.Wm = a->state[4 * i + 2]; in.z = a->state[4 * i + 3]; }
+                else {   // no state kept: carry within this call through scratch state buffers
+                    float* st = BF(c, B_IST_S, float, nS * d.L); float* scs = BF(c, B_IST_CS, float, nCs * d.L);
+                    float* sw = BF(c, B_IST_W, float, nW * d.L); float* sz = BF(c, B_IST_Z, float, nZ * d.L);
+                    if (k == 0) { zero(c, st + nS * i, nS * 4); zero(c, scs + nCs * i, nCs * 4); zero(c, sw + nW * i, nW * 4); zero(c, sz + nZ * i, nZ * 4); }
+                    in.S = st + nS * i; in.cs = scs + nCs * i; in.Wm = sw + nW * i; in.z = sz + nZ * i;
+                }
+                if (a->reset) {
+                    LAUNCH1D(k_mask_zero, nS, in.S, a->reset + (long)k * B, (long)d.H * KD * KD, B);
+                    LAUNCH1D(k_mask_zero, nCs, in.cs, a->reset + (long)k * B, (long)d.Cc * d.W, B);
+                }
+                if (!d.has_mem[i]) { in.Wm = in.z = NULL; }
+                out = in;
+                if (d.has_mem[i] && !in.Wm) { in.Wm = zbuf; in.z = zbuf; out.Wm = out.z = NULL; }
+            }
+            layer_fwd<KD>(c, i, s, hx(c, k, i), hx(c, k, i + 1), &in, &out);
+        }
+    }
+    if (real_out || mem_out) for (int k = 0; k < np; k++) hy_copy(c, k, hx(c, k, hi), real_out, mem_out, 0, NULL);
+}
+
+static void hy_head_impl(Ctx* c, const float* real_in) {
+    Dims& d = c->d;
+    const ArmtForwardArgs* a = hya(c);
+    int np = c->hy_np;
+    long xs_per = hy_xs_per(c);
+    for (int k = 0; k < np; k++) {
+        Step s = make_step(c, c->tr_B, c->tr_Tr[k], c->tr_Tm[k]);
+        float* x = hx(c, k, d.L);
+        if (real_in) hy_copy(c, k, x, real_in, NULL, 1, NULL);
+        float* dx = NULL;
+        if (c->hy_train) { dx = (float*)c->buf[B_DXS].p + xs_per * k; zero(c, dx, (size_t)s.N * d.D * 4); }
+        head(c, s, x, c->tr_start[k], c->tr_T, a->labels, a->token_losses, a->logits, a->logits_last, k == np - 1, a->inv_n, dx);
+    }
+    if (!c->hy_train) c->hy_active = 0;
+}
+
+static void hy_head_bwd_impl(Ctx* c, const float* gscale, float* d_real) {
+    Dims& d = c->d;
+    c->grad = c->tr_grad;
+    if (gscale) {   // the head's parameter grads were computed in the forward for a loss gradient of 1
+        float* gn = GP(c, P_NORMF);
+        if (gn) LAUNCH1D(k_scale, (long)d.D, gn, (long)d.D, gscale);
+        float* gl = GP(c, P_LMHEAD);   // the embedding's when tied: it holds only the head's part until armt_hy_run_bwd(0, ..)
+        if (gl) LAUNCH1D(k_scale, (long)d.V * d.D, gl, (long)d.V * d.D, gscale);
+    }
+    long xs_per = hy_xs_per(c);
+    for (int k = 0; k < c->hy_np; k++) hy_copy(c, k, (float*)c->buf[B_DXS].p + xs_per * k, d_real, NULL, 0, gscale);
+}
+
+template <int KD>
+static void hy_run_bwd_impl(Ctx* c, int lo, int hi, const float* d_real_out, const float* d_mem_out, float* d_real_in, float* d_mem_in) {
+    Dims& d = c->d;
+    c->grad = c->tr_grad;
+    int B = c->tr_B, np = c->hy_np, D = d.D;
+    long xs_per = hy_xs_per(c);
+    long nS = (long)B * d.H * KD * KD, nCs = (long)B * d.Cc * d.W, nW = (long)B * d.dk * D / d.Hm, nZ = (long)B * d.dk;
+    float *DXS = (float*)c->buf[B_DXS].p;
+    float *SS = (float*)c->buf[B_ST_S].p, *SCS = (float*)c->buf[B_ST_CS].p, *SW = (float*)c->buf[B_ST_W].p, *SZ = (float*)c->buf[B_ST_Z].p;
+    if (d_real_out || d_mem_out) for (int k = 0; k < np; k++) hy_copy(c, k, DXS + xs_per * k, d_real_out, d_mem_out, 1, NULL);
+    float *dS = BF(c, B_DST_S, float, nS), *dCs = BF(c, B_DST_CS, float, nCs), *dW = BF(c, B_DST_W, float, nW), *dZ = BF(c, B_DST_Z, float, nZ);
+    for (int i = hi - 1; i >= lo; i--) {
+        if (d.c.attn[i]) armt_fail("armt_hy_run_bwd: layer " + std::to_string(i) + " is an attention layer");
+        zero(c, dS, nS * 4); zero(c, dCs, nCs * 4); zero(c, dW, nW * 4); zero(c, dZ, nZ * 4);
+        for (int k = np - 1; k >= 0; k--) {
+            Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+            long si = (long)i * np + k;
+            LState in = {SS + nS * si, SCS + nCs * si, d.has_mem[i] ? SW + nW * si : NULL, d.has_mem[i] ? SZ + nZ * si : NULL};
+            float* xo_tmp = BF(c, B_XOT, float, xs_per);
+            LState disc = {NULL, NULL, d.has_mem[i] ? BF(c, B_WDISC, float, nW) : NULL, d.has_mem[i] ? BF(c, B_ZDISC, float, nZ) : NULL};
+            layer_fwd<KD>(c, i, s, hx(c, k, i), xo_tmp, &in, &disc, true);
+            LState dst = {dS, dCs, d.has_mem[i] ? dW : NULL, d.has_mem[i] ? dZ : NULL};
+            layer_bwd<KD>(c, i, s, hx(c, k, i), hx(c, k, i + 1), &in, DXS + xs_per * k, &dst);
+            if (c->tr_reset && k > 0) {
+                LAUNCH1D(k_mask_zero, nS, dS, c->tr_reset + (long)k * B, (long)d.H * KD * KD, B);
+                LAUNCH1D(k_mask_zero, nCs, dCs, c->tr_reset + (long)k * B, (long)d.Cc * d.W, B);
+            }
+        }
+    }
+    if (lo > 0) {
+        if (d_real_in || d_mem_in) for (int k = 0; k < np; k++) hy_copy(c, k, DXS + xs_per * k, d_real_in, d_mem_in, 0, NULL);
+        return;
+    }
+    const ArmtForwardArgs* a = hya(c);
+    for (int k = 0; k < np; k++) {
+        Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+        k_embed_bwd<<<s.N, 256, 0, c->stream>>>(DXS + xs_per * k, a->ids, c->tr_T, c->tr_start[k], GP(c, P_EMB), GP(c, P_MEMTOK), s.Tr, s.Tm, D);
+    }
+    c->hy_active = 0;
+}
+
+API int armt_hy_begin(void* p, const float** params, const ArmtForwardArgs* a, int* pieces, int cap, int* np_out) {
+    API_TRY
+    Ctx* c = (Ctx*)p;
+    c->params = params;
+    set_stream(c, a->stream);
+    if (c->d.KD == 64) hy_begin_impl<64>(c, a, pieces, cap, np_out); else hy_begin_impl<128>(c, a, pieces, cap, np_out);
+    CK(cudaGetLastError());
+    return 0;
+    API_CATCH(-1)
+}
+API int armt_hy_run(void* p, const float** params, int lo, int hi, const float* real_in, const float* mem_in, float* real_out, float* mem_out,
+                    void* stream) {
+    API_TRY
+    Ctx* c = (Ctx*)p;
+    if (!c->hy_active) armt_fail("armt_hy_run without armt_hy_begin");
+    if (lo < 0 || hi > c->d.L || lo > hi) armt_fail("layer range out of bounds");
+    c->params = params;
+    set_stream(c, stream);
+    if (c->d.KD == 64) hy_run_impl<64>(c, lo, hi, real_in, mem_in, real_out, mem_out);
+    else hy_run_impl<128>(c, lo, hi, real_in, mem_in, real_out, mem_out);
+    CK(cudaGetLastError());
+    return 0;
+    API_CATCH(-1)
+}
+API int armt_hy_head(void* p, const float** params, const float* real_in, void* stream) {
+    API_TRY
+    Ctx* c = (Ctx*)p;
+    if (!c->hy_active) armt_fail("armt_hy_head without armt_hy_begin");
+    c->params = params;
+    set_stream(c, stream);
+    hy_head_impl(c, real_in);
+    CK(cudaGetLastError());
+    return 0;
+    API_CATCH(-1)
+}
+API int armt_hy_head_bwd(void* p, const float** params, const float* gscale, float* d_real, void* stream) {
+    API_TRY
+    Ctx* c = (Ctx*)p;
+    if (!c->hy_active || !c->hy_train || !c->tr_grad) armt_fail("armt_hy_head_bwd without a recorded training forward");
+    c->params = params;
+    set_stream(c, stream);
+    hy_head_bwd_impl(c, gscale, d_real);
+    CK(cudaGetLastError());
+    return 0;
+    API_CATCH(-1)
+}
+API int armt_hy_run_bwd(void* p, const float** params, int lo, int hi, const float* d_real_out, const float* d_mem_out, float* d_real_in,
+                        float* d_mem_in, void* stream) {
+    API_TRY
+    Ctx* c = (Ctx*)p;
+    if (!c->hy_active || !c->hy_train || !c->tr_grad) armt_fail("armt_hy_run_bwd without a recorded training forward");
+    if (lo < 0 || hi > c->d.L || lo > hi) armt_fail("layer range out of bounds");
+    c->params = params;
+    set_stream(c, stream);
+    if (c->d.KD == 64) hy_run_bwd_impl<64>(c, lo, hi, d_real_out, d_mem_out, d_real_in, d_mem_in);
+    else hy_run_bwd_impl<128>(c, lo, hi, d_real_out, d_mem_out, d_real_in, d_mem_in);
+    CK(cudaGetLastError());
+    if (lo == 0) c->tr_grad = NULL;
+    return 0;
+    API_CATCH(-1)
+}
+
 // forward. params: n_params device pointers in canonical order.
 API int armt_forward(void* p, const float** params, const ArmtForwardArgs* a) {
     API_TRY
     Ctx* c = (Ctx*)p;
+    for (int i = 0; i < c->d.L; i++) if (c->d.c.attn[i]) armt_fail("a hybrid backbone (attention layers) runs through armt_hy_*");
     c->params = params;
     set_stream(c, a->stream);
     if (c->d.KD == 64) forward_impl<64>(c, a); else forward_impl<128>(c, a);
