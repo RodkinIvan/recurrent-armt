@@ -20,7 +20,7 @@ summary: [reports/carmt_speedup.md](../reports/carmt_speedup.md). Raw outputs: [
 | `train_carmt.py` | runs the unchanged `train.py` with carmt: `torchrun ... carmt/train_carmt.py <train.py args>` |
 | `jobs/train_carmt.json` | router job: the `gdn2_370m_armt` run through `train_carmt.py` |
 | `build_env.sh` | installs a CUDA 12.6 toolkit into a separate prefix (the jobs' env has none) and builds |
-| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 48 + 11 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
+| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 48 + 12 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
 | `qwen35_check.py` | Qwen3.5-0.8B-Base + ARMT: carmt vs HF / the original / the exact recurrence, fp32 and bf16 gradients |
 | `bench.py`, `profile_kernels.py`, `long_context.py`, `speedup_figure.py` | speed vs the original; per-kernel GPU time; memory vs context length; the report figure |
 
@@ -130,7 +130,10 @@ the embeddings and the loss in C, and the attention layers in PyTorch, through t
 - **State.** `ARMTState` as the original's: the attention layers' entries are their KV caches; inference with a state,
   pieces, and generation go through the same path.
 - **Memory.** With gradient checkpointing on (as `train.py` runs), the attention layers are recomputed in the backward;
-  `CARMT_ATTN_CKPT=0` keeps their activations instead (faster, about twice the memory).
+  `CARMT_ATTN_CKPT=0` keeps their activations instead (faster, about twice the memory). Inference (no grad) longer than
+  `CARMT_HY_CHUNK` tokens (default 8 segments) runs in chunks with the state carried, so besides the KV caches only one
+  chunk's hidden states are held: last-position logits at 256k tokens need 6.35 GB above the weights (the original 6.12 GB)
+  at 12.8k vs 7.1k tok/s (`records/long_context_rtx5880_qwen35.log`). A training call runs over the whole window at once.
 - **Supported:** as many value as key heads in the GDN (Qwen3.5-0.8B; the larger Qwen3.5 models have more value heads and
   fall outside), head dim 64 or 128, conv 4, `mem_tokens_in_stream=False`.
 
@@ -141,10 +144,13 @@ the embeddings and the loss in C, and the attention layers in PyTorch, through t
 |---|---|
 | tiny Qwen3.5 (layer patterns ending / starting with attention), fp32, vs the exact recurrence | logits ≤ 1e-4, every gradient ≤ 3e-4 |
 | Qwen3.5-0.8B-Base + ARMT, fp32 logits vs the exact token-by-token recurrence, 2 × 2048 tokens | carmt 2.8e-6; the original with fla's chunk kernel 1.8e-3 (HF itself is 1.8e-3 off too) |
-| 0.8B bf16 training step, every gradient vs fp32 | median error 0.84× the original's own bf16 error |
+| 0.8B bf16 training step, every gradient vs fp32, per-parameter ratio to the original's own bf16 error | median 0.83, 95th percentile 1.36, max 4.81; the original against itself with the math instead of the flash attention backend: 0.97 / 1.32 / 6.09 (`records/qwen35_noise_rtx5880.log`) |
 | pieces == whole, state interchangeable with the original, generation == forward, state dropout | ≤ 1e-4 |
 | DDP (+ accumulation, `no_sync`), ZeRO-1, ZeRO-2, tiny hybrid, fp32, vs the exact reference | ≤ 9e-5 (`records/dist_check_qwen35_2x_rtx5880.log`) |
 | DDP and ZeRO-2, Qwen3.5-0.8B, bf16, vs single-process carmt averaged over the ranks' batches | ≤ 3e-7 |
+
+The bf16 tail is the parameters whose gradients are noise-dominated (the memory's `W_mb.bias` / `W_mk` lead every
+variant's list, the original's included); changing only the attention backend moves the original's own errors by up to 6×.
 
 Two properties of the PyTorch side show up at this precision, the same for the original:
 - PyTorch's flash / memory-efficient attention backward is not deterministic: two identical bf16 steps differ by up to ~2e-2

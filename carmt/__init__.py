@@ -671,6 +671,11 @@ class CARMT:
             torch._assert_async(((labels >= 0) & (labels < self.cfg.vocab) | (labels == -100)).all(), "label out of range")
             inv_n = (1.0 / (labels[:, 1:] != -100).sum().clamp(min=1).float()).reshape(1)
         cctx = self._context(self._precision())
+        # hybrid inference runs layer-major over the whole call (O(T) hidden buffers): longer calls go in chunks of
+        # CARMT_HY_CHUNK tokens (default 8 segments) with the state carried, as the original's segment-by-segment pass
+        chunk = int(os.environ.get("CARMT_HY_CHUNK", 8 * self.cfg.segment_size)) if self.hybrid else 0
+        if self.hybrid and not grad_on and 0 < chunk < T:
+            return self._hy_chunked(ids, labels, inv_n, state, return_state, output_logits, chunk)
         if self.hybrid:
             return self._hy_forward(cctx, ids, labels, inv_n, reset, state, position, new_position, grad_on, return_state,
                                     output_logits)
@@ -738,6 +743,36 @@ class CARMT:
         call._keep_args = (a, st_arr)   # the library keeps pointers to these until the head
         return call
 
+    def _hy_chunked(self, ids, labels, inv_n, state, return_state, output_logits, chunk):
+        """No-grad hybrid call in chunks of ``chunk`` tokens, the state (KV caches included) carried between them. The loss
+        of the last token of each chunk (its target is the next chunk's first) comes from that chunk's last logits."""
+        import torch.nn.functional as F
+        from recurrent_armt.modeling import ARMTOutput
+        B, T = ids.shape
+        full = bool(output_logits) and output_logits != "last"
+        st, logits, tls = state, [], []
+        for a in range(0, T, chunk):
+            b = min(T, a + chunk)
+            want = "last" if not full and (labels is not None and b < T or output_logits == "last" and b == T) else full
+            o = self.forward(input_ids=ids[:, a:b], labels=labels[:, a:b] if labels is not None else None, state=st,
+                             return_state=True, output_logits=want)
+            st = o.state
+            st._carmt_consume = b < T   # ours: the next chunk may drop its KV caches as it replaces them
+            if labels is not None:
+                tls.append(o.token_losses)
+                if b < T:   # last token of this chunk -> first label of the next
+                    tgt = labels[:, b]
+                    tls.append(F.cross_entropy(o.logits[:, -1].float(), tgt.clamp_min(0), reduction="none")
+                               .masked_fill(tgt == -100, 0.0)[:, None])
+            if full:
+                logits.append(o.logits)
+            elif output_logits == "last" and b == T:
+                logits.append(o.logits)
+        tl = torch.cat(tls, dim=1) if labels is not None else None
+        loss = tl.sum() * inv_n[0] if labels is not None else None
+        return ARMTOutput(loss=loss, logits=torch.cat(logits, dim=1) if logits else None, token_losses=tl,
+                          state=st if return_state else None)
+
     def _hy_attention(self, call, i, real, mem, kv):
         """Attention layer i (PyTorch, the backbone's layers-first path) on the real tokens and the segment-ending memory tokens."""
         readouts = [(mem[:, w], start + tr) for w, (start, tr, tm) in enumerate([p for p in call.pieces if p[2]])]
@@ -794,6 +829,8 @@ class CARMT:
             if state is not None:
                 st = self._from_armt_state(state)
                 kvs = [state.layers[i][1] if self.cfg.attn[i] else None for i in range(self.cfg.n_layers)]
+                if getattr(state, "_carmt_consume", False):   # an intermediate state of _hy_chunked: hold each layer's
+                    state.layers = None                       # old KV cache only until its replacement is built
             elif return_state:
                 st = self._zero_state(B, ids.device)
             V = self.cfg.vocab

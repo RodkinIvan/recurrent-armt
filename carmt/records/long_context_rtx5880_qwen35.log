@@ -1,0 +1,14 @@
+# Qwen3.5-0.8B-Base + ARMT, inference, output_logits="last", batch 1, bf16, RTX 5880 Ada (mbz_nlp2.14 GPU 1)
+# peak = torch.cuda.max_memory_allocated during the call minus the memory allocated before it (weights, packed copies)
+# the original runs segments-first (vertical_mode), its constant-memory path for last-position calls
+# carmt chunk=0: one layer-major pass over the whole call (O(T) hidden buffers; before the chunking)
+carmt            chunk=0       T=  65536  peak above weights   3.70 GB    32.2k tok/s
+carmt            chunk=0       T= 262144  peak above weights  16.03 GB     9.3k tok/s
+# carmt chunk=default (8 segments) with the previous chunk's state, KV caches included, held while the next runs
+carmt            chunk=default T=  65536  peak above weights   2.30 GB    32.0k tok/s
+carmt            chunk=default T= 262144  peak above weights   8.82 GB    12.9k tok/s
+# carmt chunk=default, each layer's old KV cache released as its replacement is built (current)
+carmt            chunk=default T=  65536  peak above weights   1.70 GB    31.5k tok/s
+carmt            chunk=default T= 262144  peak above weights   6.35 GB    12.8k tok/s
+original         chunk=default T=  65536  peak above weights   1.62 GB    18.2k tok/s
+original         chunk=default T= 262144  peak above weights   6.12 GB     7.1k tok/s

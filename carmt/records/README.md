@@ -12,7 +12,8 @@ report, before those changes.
 
 | file | what | build |
 |---|---|---|
-| `tests_rtx6000.log`, `tests_rtx5880.log` | `pytest carmt/tests -rA`: 48 passed | current |
+| `tests_rtx5880.log` | `pytest carmt/tests/test_carmt.py -rA` (GDN-2): 48 passed, on the build of the hybrid commits (shared kernels changed: norms, prep, output norm, packing, loss chunk) | current |
+| `tests_rtx6000.log` | the same, 48 passed, on the RTX 6000 before the hybrid commits (b0b476f; `mbz_nlp2` is busy with training runs) | GDN-2 release |
 | `dist_check_2x_rtx5880.log` | `torchrun --nproc_per_node 2 carmt/tests/dist_check.py`: DDP, ZeRO-1, ZeRO-2, run from an empty GEMM cache (every shape tuned during the run) | current |
 | `bench_rtx6000_bf16.json` | `carmt/bench.py`: 1-GPU training / inference / generation, carmt and the original in one run; `peak_gb` = `torch.cuda.max_memory_allocated` (the library allocates through PyTorch) | current |
 | `profile_rtx6000_carmt_train.log`, `profile_rtx6000_original_train.log` | `carmt/profile_kernels.py --what train`: per-kernel GPU time of one training step | carmt: current |
@@ -29,6 +30,8 @@ report, before those changes.
 | `dist_check_qwen35_2x_rtx5880.log` | `torchrun --nproc_per_node 2 carmt/tests/dist_check.py --model qwen35`: DDP / ZeRO-1 / ZeRO-2, tiny hybrid fp32 and Qwen3.5-0.8B bf16 | current |
 | `bench_rtx5880_qwen35_bf16.json` | `carmt/bench.py --base Qwen/Qwen3.5-0.8B-Base --batch 4`: training (carmt with and without attention checkpointing), inference, generation, carmt and the original in one run | current |
 | `train_1x_rtx5880_qwen35_{carmt,original}.log` | 20-step 1-GPU `train.py` runs on Qwen3.5-0.8B-Base, `carmt/train_carmt.py` vs `train.py`, same arguments: 8.8k vs 6.6k tok/s, same losses | current |
+| `qwen35_noise_rtx5880.log` | `carmt/qwen35_noise.py`: bf16 gradient errors per parameter vs the fp32 original, ratio median / p95 / max for carmt and for the original against itself (second run, backward inside autocast, math attention) | current |
+| `long_context_rtx5880_qwen35.log` | last-position inference memory and speed at 64k / 256k tokens: carmt chunked (current), earlier variants, the original | current |
 | `phases_rtx5880_qwen35_train.log` | one training step by phase (C recurrent fwd / bwd, loss head, PyTorch attention), synchronized at each boundary | current |
 | `bench_rtx6000_bf16_splitstate.json` | the optional `-DARMT_SPLIT_STATE` build (hi/lo bf16 state): ~10% slower, which is why it is off | previous, split |
 | `bench_rtx6000_decode_after_fix.json` | `bench.py --what decode`, after the original's fix | previous |

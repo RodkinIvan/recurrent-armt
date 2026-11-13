@@ -224,3 +224,25 @@ def test_accelerate_training_steps_and_frozen_backbone():
     m(input_ids=ids, labels=ids).loss.backward()
     assert all(p.grad is None for p in m.model.parameters())
     assert all(p.grad is not None for p in m.memory_layers.parameters() if p.requires_grad)
+
+
+def test_long_inference_in_chunks_equals_whole(monkeypatch):
+    """No-grad calls longer than CARMT_HY_CHUNK tokens run in chunks with the state carried (bounded hidden buffers):
+    logits (all / last), token losses across chunk boundaries, loss and the returned state equal the whole call."""
+    m = make()
+    r = runner(m)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    ids, nxt = ids_of(2, 70, seed=8), ids_of(2, 9, seed=9)
+    labels = ids.clone()
+    labels[0, 30:35] = -100
+    outs = {}
+    for chunk in ("0", "24"):      # 0: one layer-major pass; 24: chunks not aligned with the 16-token segments
+        monkeypatch.setenv("CARMT_HY_CHUNK", chunk)
+        with torch.no_grad():
+            full = r(input_ids=ids, return_state=True)
+            last = r(input_ids=ids, output_logits="last")
+            lab = r(input_ids=ids, labels=labels)
+            cont = r(input_ids=nxt, state=full.state).logits
+        outs[chunk] = (full.logits, last.logits, lab.loss, lab.token_losses, cont)
+    for a, b in zip(outs["24"], outs["0"]):
+        assert a.shape == b.shape and rel(a, b) < TIGHT, (a.shape, b.shape, rel(a, b))
