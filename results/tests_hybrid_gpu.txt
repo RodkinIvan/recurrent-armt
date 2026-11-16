@@ -1,0 +1,80 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/ivan.rodkin/router/recurrent_armt
+plugins: platformdirs-4.14.5, anyio-4.16.0
+collected 242 items / 198 deselected / 44 selected
+
+tests/test_armt.py ..qwen3_5 in_stream=False: max |H - V| = 0.000e+00, bitwise equal: True
+.qwen3_5 in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+..qwen3_5 in_stream=False vertical=False: max |gen - fwd| = 3.953e-06
+.qwen3_5 in_stream=True vertical=False: max |gen - fwd| = 3.159e-06
+.qwen3_5 in_stream=False vertical=True: max |gen - fwd| = 3.953e-06
+.qwen3_5 in_stream=True vertical=True: max |gen - fwd| = 3.159e-06
+.....ssqwen3_5 in_stream=False: |dL/dx_seg0| both=3.655e+01 memory-only=3.085e+01 rnn-only=1.321e+01 none=0.000e+00
+.qwen3_5 in_stream=True: |dL/dx_seg0| both=3.649e+01 memory-only=3.076e+01 rnn-only=1.172e+01 none=0.000e+00
+...qwen3_5: grad checkpointing max rel grad diff 0.000e+00
+.qwen3_5: grad checkpointing max rel grad diff 0.000e+00
+.qwen3_5: V vs H max rel grad diff 0.000e+00
+..Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 258.78it/s]
+Loading weights:   0%|          | 0/82 [00:00<?, ?it/s]Loading weights: 100%|██████████| 82/82 [00:00<00:00, 15047.82it/s]
+..sqwen3_5: state reset: |dL/dx_seg0| memory 3.670e+01, memory cut 1.333e+01
+....s.....qwen3_5: kernels vs reference max rel grad diff 6.965e-04
+.
+tests/test_training.py qwen3_5 ckpt=False: loss 4.597 -> 0.034
+.qwen3_5 ckpt=True: loss 4.597 -> 0.034
+...qwen3_5: bf16 loss 4.595603 vs 4.595603, max rel grad diff 0.00e+00
+.
+tests/test_pretrained.py Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:  90%|████████▉ | 287/320 [00:00<00:00, 2834.46it/s]Loading weights: 100%|██████████| 320/320 [00:00<00:00, 2935.24it/s]
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:  73%|███████▎  | 234/320 [00:00<00:00, 2335.57it/s]Loading weights: 100%|██████████| 320/320 [00:00<00:00, 2542.94it/s]
+Qwen/Qwen3.5-0.8B-Base: control |base generate - base forward| rel 8.62e-04
+Qwen/Qwen3.5-0.8B-Base vertical=False: |ARMT@init - base| rel 2.08e-04 (control 8.62e-04), |delta CE| 2.9e-05, argmax agree 1.0000
+Qwen/Qwen3.5-0.8B-Base vertical=True: |ARMT@init - base| rel 2.08e-04 (control 8.62e-04), |delta CE| 2.9e-05, argmax agree 1.0000
+.Qwen/Qwen3.5-0.8B-Base: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 8.14e-04 (control 8.62e-04), argmax agree 1.0000
+.
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/test_armt.py::test_init_equals_base_model[False-qwen3_5]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-qwen3_5]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-qwen3_5]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-qwen3_5]
+PASSED tests/test_armt.py::test_memory_changes_outputs[qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-qwen3_5]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-qwen3_5]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-qwen3_5]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[qwen3_5]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[qwen3_5]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-qwen3_5]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-qwen3_5]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[qwen3_5]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[qwen3_5]
+PASSED tests/test_armt.py::test_save_load_roundtrip[qwen3_5]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[qwen3_5]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[qwen3_5]
+PASSED tests/test_armt.py::test_unwrapped_layers[qwen3_5]
+PASSED tests/test_armt.py::test_last_position_logits[False-qwen3_5]
+PASSED tests/test_armt.py::test_last_position_logits[True-qwen3_5]
+PASSED tests/test_armt.py::test_memory_stats[qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_memory_only_on_recurrent_layers[qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_state_size[False-qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_state_size[True-qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_state_reset_keeps_attention[qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_kernels_match_reference[qwen3_5]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-qwen3_5]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-qwen3_5]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-qwen3_5]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-qwen3_5]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[qwen3_5]
+PASSED tests/test_pretrained.py::test_init_equals_base[Qwen/Qwen3.5-0.8B-Base]
+PASSED tests/test_pretrained.py::test_active_memory_equivalences[Qwen/Qwen3.5-0.8B-Base]
+SKIPPED [2] tests/test_armt.py:119: the KV caches of the attention layers grow: test_hybrid_state_size
+SKIPPED [1] tests/test_armt.py:316: the attention layers keep their KV caches: test_hybrid_state_reset_keeps_attention
+SKIPPED [1] tests/test_armt.py:383: the KV caches of the attention layers grow
+=========== 40 passed, 4 skipped, 198 deselected in 60.65s (0:01:00) ===========

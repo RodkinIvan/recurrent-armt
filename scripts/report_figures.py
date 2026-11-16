@@ -154,12 +154,77 @@ def fig_ablation(out):
     fig.savefig(out / "fig4_memory_ablation.png", dpi=160)
 
 
+def fig_hybrid(out):
+    """Qwen3.5-0.8B hybrid: ARMT on the GDN layers vs its control, per segment and over training."""
+    a, c = evals("qwen35_0.8b_armt"), evals("qwen35_0.8b_nomem")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    ax = axes[0]
+    base, fa, fc = segs(a[0], "val_long"), segs(a[600], "val_long"), segs(c[600], "val_long")
+    x = list(range(1, len(base) + 1))
+    ax.plot(x, base, ls=(0, (2, 2)), color=GRAY, label="base model (step 0)")
+    ax.plot(x, fc, color=ORANGE, marker="o", label="no memory (control)")
+    ax.plot(x, fa, color=BLUE, marker="o", ms=4, label="ARMT on the 18 GDN layers")
+    gap = max(abs(p - q) for p, q in zip(fa, fc))
+    ax.set(title=f"Long documents, step 600 (max |ARMT - control| {gap:.4f})", xlabel="segment (1024 tokens each)",
+           ylabel="loss, long-document windows", xticks=x)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=9)
+    ax = axes[1]
+    for e, name, color, ms in [(c, "no memory (control)", ORANGE, 6), (a, "ARMT", BLUE, 4)]:
+        ax.plot(list(e), [v["val_long/loss"] for v in e.values()], color=color, marker="o", ms=ms, label=name)
+    ax.set(title="Long documents over training", xlabel="training step (262k tokens each)", ylabel="loss, long-document windows")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=9)
+    fig.suptitle("Qwen3.5-0.8B hybrid: attention sees the whole 8k window, and ARMT ties its control",
+                 x=0.01, ha="left", fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out / "fig6_hybrid_qwen35.png", dpi=160)
+
+
+MATH_SETS = [("val_long_arxiv", "arXiv"), ("val_long_omr", "OpenMath-\nReasoning"), ("val_long", "FineWeb-Edu\nlong docs")]
+
+
+def fig_math(out):
+    """Long-math mix, GDN-2: what the memory is worth (control minus ARMT), without and with state dropout."""
+    runs = {"none": (evals("gdn2_370m_math_armt")[600], evals("gdn2_370m_math_nomem")[600]),
+            "sd": (evals("gdn2_370m_math_sd0.5_armt")[600], evals("gdn2_370m_math_sd0.5_nomem")[600])}
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.9), gridspec_kw={"width_ratios": [1.35, 1]})
+    ax = axes[0]
+    groups = [(k + "_reset", n + "\nstate reset") for k, n in MATH_SETS] + [(k, n + "\nstate kept") for k, n in MATH_SETS]
+    w = 0.38
+    for off, key, name, color in [(-w / 2 - 0.01, "none", "trained without state dropout", GRAY),
+                                  (w / 2 + 0.01, "sd", "trained with state dropout p = 0.5", BLUE)]:
+        armt, ctrl = runs[key]
+        vals = [1000 * (ctrl[f"{g}/loss"] - armt[f"{g}/loss"]) for g, _ in groups]
+        bars = ax.bar([i + off for i in range(len(groups))], vals, w, color=color, label=name)
+        for b, v in zip(bars, vals):
+            ax.annotate(f"{v:+.1f}", (b.get_x() + b.get_width() / 2, max(v, 0)), xytext=(0, 3), textcoords="offset points",
+                        ha="center", fontsize=8, color=INK2)
+    ax.axhline(0, color=INK2, lw=1)
+    ax.axvline(2.5, color=GRID, lw=1.2)
+    ax.set_xticks(range(len(groups)), [n for _, n in groups], fontsize=8.5)
+    ax.set(ylabel="loss(control) - loss(ARMT), millinats", title="Memory gain at step 600 (each run vs its own control)")
+    ax.legend(fontsize=9, loc="upper right")
+    ax = axes[1]
+    armt, ctrl = runs["sd"]
+    for (k, n), color in zip(MATH_SETS, (BLUE, ORANGE, AQUA)):
+        g = [1000 * (p - q) for p, q in zip(segs(ctrl, k + "_reset"), segs(armt, k + "_reset"))]
+        x = list(range(1, len(g) + 1))
+        ax.plot(x, g, color=color, marker="o", ms=4, label=n.replace("-\n", "").replace("\n", " "))
+    ax.axhline(0, color=INK2, lw=1)
+    ax.set(title="Gain per segment (dropout runs, state reset)", xlabel="segment (1024 tokens each)",
+           ylabel="loss(control) - loss(ARMT), millinats", xticks=x)
+    ax.legend(fontsize=9, loc="lower right")
+    fig.suptitle("GDN-2 370M on the long-math mix: state dropout makes the memory carry context, but only when the state is lost",
+                 x=0.01, ha="left", fontweight="bold", fontsize=11.5)
+    fig.tight_layout()
+    fig.savefig(out / "fig7_math_state_dropout.png", dpi=160)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="reports/figures")
     out = Path(p.parse_args().out)
     out.mkdir(parents=True, exist_ok=True)
-    for f in (fig_tie, fig_rewarm, fig_state_dropout, fig_ablation):
+    for f in (fig_tie, fig_rewarm, fig_state_dropout, fig_ablation, fig_hybrid, fig_math):
         f(out)
     print("figures in", out)
 

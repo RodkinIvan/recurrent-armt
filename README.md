@@ -162,11 +162,17 @@ ARMT settings as in the Gemma checkpoint unless noted: 1024-token segments, 32 m
 | `rwkv7_0.4b_armt` | `train.json` | RWKV-7 0.4B (g1a, annealed) + ARMT, lr 3e-5, memory lr x10 | 2.4896 / 2.5351 (2.4738 / 2.5224) |
 | `rwkv7_0.4b_nomem` | `train.json` | the same without memory (`--num_mem_tokens 0`): the control | 2.4890 / 2.5346 |
 | `rwkv7_0.4b_nomem_lr3e-6` | `diag_lr.json` | control at lr 3e-6: no degradation (2.4740 at step 100) -> the rise above is the re-warm of an annealed checkpoint | stopped at 100 |
-| `rwkv7_0.4b_armt_freeze300` | (manual, 1 GPU) | `--freeze_backbone_steps 300` | running |
+| `rwkv7_0.4b_armt_freeze300` | (manual, 1 GPU) | `--freeze_backbone_steps 300` | 2.4792 / 2.5254 |
 | `gdn2_370m_armt` | `train.json` | GDN-2 370M, 30B-token snapshot (not annealed, `scripts/convert_gdn2.py`), lr 1e-4, memory lr x3 | 2.4182 / 2.4799 (2.4331 / 2.4936) |
 | `gdn2_370m_nomem` | `train.json` | its control | 2.4180 / 2.4798 |
-| `gdn2_370m_armt_seg256` | `seg256.json` | 256-token segments (32 per window) | running |
-| `gdn2_370m_armt_freeze300_sd{0.5,1.0}` | `state_dropout.json` | backbone frozen and recurrent state dropout p for 300 steps | running |
+| `gdn2_370m_armt_seg256` | `seg256.json` | 256-token segments (32 per window) | 2.4181 / 2.4799 |
+| `gdn2_370m_armt_freeze300_sd{0.5,1.0}` | `state_dropout.json` | backbone frozen and recurrent state dropout p for 300 steps | 2.4171 / 2.4783 (both) |
+| `qwen35_0.8b_{armt,nomem}` | `qwen35.json` | Qwen3.5-0.8B-Base hybrid, ARMT on the 18 GDN layers / control; lr 1e-5, memory lr x30 | 2.6007 / 2.4907 vs 2.6002 / 2.4902 (2.6336 / 2.5184) |
+| `gdn2_370m_math_{armt,nomem}` | `math_mix.json` | GDN-2 on the long-math mix (`--mix fineweb:4,arxiv:1,omr:2`) | val_long_arxiv 1.9067 vs 1.9083, omr 1.1653 vs 1.1651 |
+| `gdn2_370m_math_sd0.5_{armt,nomem}` | `math_state_dropout.json` | the same with state dropout p = 0.5 for all steps | state reset: arxiv 2.1047 vs 2.1220, omr 1.2707 vs 1.2874; state kept: tie |
+
+Long-math and hybrid runs: see `reports/recurrent_armt_wip.md` (sections 4.5–4.7); figures from
+`scripts/report_figures.py` and `scripts/report_diagrams.py`.
 
 So far the memory is trained but unused: ARMT matches its control everywhere, and zeroing W_mv in the trained
 `gdn2_370m_armt` changes the loss by <= 2e-4. With the recurrent state reset at every boundary (`val_long_reset`,
