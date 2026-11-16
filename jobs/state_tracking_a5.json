@@ -1,0 +1,112 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "scripts",
+  "tests",
+  "train.py",
+  "train_state_tracking.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "st_a5_nomem",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --train_len 64 --steps 20000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 0",
+   "gpus": 1,
+   "gb": 8,
+   "expect": [
+    "outputs/st_a5_nomem/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5_nomem_neg",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --train_len 64 --steps 20000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 0 --allow_neg_eigval",
+   "gpus": 1,
+   "gb": 8,
+   "expect": [
+    "outputs/st_a5_nomem_neg/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5_armt_s2_m2",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --train_len 64 --steps 20000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 2 --segment_size 2",
+   "gpus": 1,
+   "gb": 8,
+   "expect": [
+    "outputs/st_a5_armt_s2_m2/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5_armt_s2_m4",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --train_len 64 --steps 20000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 4 --segment_size 2",
+   "gpus": 1,
+   "gb": 8,
+   "expect": [
+    "outputs/st_a5_armt_s2_m4/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5_armt_s5_m2",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --train_len 64 --steps 20000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 2 --segment_size 5",
+   "gpus": 1,
+   "gb": 8,
+   "expect": [
+    "outputs/st_a5_armt_s5_m2/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5_armt_s5_m4",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --train_len 64 --steps 20000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 4 --segment_size 5",
+   "gpus": 1,
+   "gb": 8,
+   "expect": [
+    "outputs/st_a5_armt_s5_m4/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  }
+ ]
+}

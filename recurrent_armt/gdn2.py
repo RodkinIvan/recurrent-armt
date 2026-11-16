@@ -20,12 +20,14 @@ class GDN2Config(PretrainedConfig):
 
     def __init__(self, vocab_size: int = 32000, hidden_size: int = 1024, num_hidden_layers: int = 16,
                  num_heads: int = 16, head_dim: int = 128, expand_v: float = 1.0, intermediate_size: int = 2048,
-                 conv_size: int = 4, norm_eps: float = 1e-5, output_gate: str = "swish", tie_word_embeddings: bool = False,
-                 bos_token_id: int = 1, eos_token_id: int = 2, **kwargs):
+                 conv_size: int = 4, norm_eps: float = 1e-5, output_gate: str = "swish", allow_neg_eigval: bool = False,
+                 tie_word_embeddings: bool = False, bos_token_id: int = 1, eos_token_id: int = 2, **kwargs):
         self.vocab_size, self.hidden_size, self.num_hidden_layers = vocab_size, hidden_size, num_hidden_layers
         self.num_heads, self.head_dim, self.expand_v = num_heads, head_dim, expand_v
         self.intermediate_size, self.conv_size, self.norm_eps = intermediate_size, conv_size, norm_eps
         self.output_gate = output_gate          # "swish" (official GDN-2) or "sigmoid" (fla's GDN-2 layer)
+        # erase gate in [0, 2] instead of [0, 1]: transition eigenvalues in [-1, 1] (the checkpoints use False)
+        self.allow_neg_eigval = allow_neg_eigval
         super().__init__(tie_word_embeddings=tie_word_embeddings, bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
 
 
@@ -70,7 +72,7 @@ class GDN2Block(nn.Module):
         self.norm_1 = RMSNorm(config.hidden_size, config.norm_eps)
         self.attn = GatedDeltaNet2(hidden_size=config.hidden_size, expand_v=config.expand_v, head_dim=config.head_dim,
                                    num_heads=config.num_heads, conv_size=config.conv_size, layer_idx=layer_idx,
-                                   norm_eps=config.norm_eps)
+                                   norm_eps=config.norm_eps, allow_neg_eigval=getattr(config, "allow_neg_eigval", False))
         if config.output_gate == "swish":
             # the official GDN-2 (NVlabs/GatedDeltaNet-2, used for these checkpoints) gates the output norm with
             # SiLU; fla's port uses a sigmoid. The norm's weight is the same parameter either way.
