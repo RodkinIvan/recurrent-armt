@@ -168,3 +168,11 @@ def test_mix_ranks_disjoint_and_resume():
     s2 = make_mix()
     s2.load_state_dict(s.state_dict())
     assert all(np.array_equal(x, y) for x, y in zip(first + take(s2, 120 - 77), ref))
+
+
+def test_peek_returns_the_first_windows_without_taking_them():
+    ref = take(make(), 40)
+    s = make()
+    head = s.peek(4)
+    assert all(np.array_equal(x, y) for x, y in zip(head, ref[:4]))
+    assert all(np.array_equal(x, y) for x, y in zip(take(s, 40), ref))          # the stream is unchanged

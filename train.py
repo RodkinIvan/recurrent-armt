@@ -204,7 +204,9 @@ def main():
     model.cuda().train()
     if a.mem_init != "random" and not a.init_from:   # a resume loads its own memory weights over this below
         from recurrent_armt.memory_init import init_memory_from_gdn
-        calib = torch.from_numpy(val["val"][:4]).long().cuda()          # the same windows on every rank
+        # calibrate on training data (this rank's first 4 windows, which it then also trains on), not on held-out
+        # windows: DDP copies rank 0's parameters to the other ranks when it wraps the model, so rank 0's init is used
+        calib = torch.from_numpy(stream.peek(4)).long().cuda()
         with torch.autocast("cuda", dtype=torch.bfloat16):
             report = init_memory_from_gdn(model, a.mem_init.removeprefix("gdn_"), calib, head=a.mem_init_head)
         log(f"memory init {a.mem_init}: " + "; ".join(

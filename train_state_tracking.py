@@ -153,6 +153,9 @@ def main(argv=None):
             wandb.log(entry, step=entry["step"])
 
     lengths = [int(s) for s in a.curriculum.split(",")] if a.curriculum else [a.train_len]
+    if a.num_mem_tokens > 0 and lengths[0] <= a.segment_size:
+        # no segment would complete: the memory is never written, gets no gradient, and the run is the plain backbone
+        raise SystemExit(f"the first training length ({lengths[0]}) must exceed --segment_size ({a.segment_size})")
     stage = 0
     model.train()
     t0, loss_acc, acc_acc, k = time.time(), 0.0, 0.0, 0

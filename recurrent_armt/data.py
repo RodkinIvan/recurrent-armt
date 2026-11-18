@@ -286,6 +286,15 @@ class PretrainStream:
                 yield windows[self.emitted - 1]
             self.chunk, self.emitted = self.chunk + 1, 0
 
+    def peek(self, n: int) -> np.ndarray:
+        """The first ``n`` windows the stream will yield, without taking them. Call it before iterating (or right after
+        ``load_state_dict``): the chunk it builds is then the one the iteration starts from, so nothing is built twice."""
+        if self._next is None:
+            self._next = self.prefetch.submit(self.build_chunk, self.chunk)
+        windows, _ = self._next.result()
+        assert self.emitted + n <= len(windows), "peek past the end of the current chunk"
+        return windows[self.emitted:self.emitted + n].copy()
+
     def batches(self, batch_size: int):
         it = iter(self)
         while True:
