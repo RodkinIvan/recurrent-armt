@@ -1,0 +1,51 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "gdn2_370m_mempretrain_qkvb",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29601 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --batch_size 8 --grad_accum 2 --lr 1e-4 --warmup_steps 200 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix arxiv:1,omr:2 --eval_state_reset --max_steps 10000 --eval_every 500 --save_every 500 --memory_lr_mult 3 --d_mem 128 --mem_init gdn_qkvb --rnn_state_dropout 1.0 --rnn_state_dropout_steps 9000 --freeze_backbone_steps 9000 --backbone_lr_restart",
+   "gpus": 2,
+   "gb": 30,
+   "expect": [
+    "outputs/gdn2_370m_mempretrain_qkvb/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "gdn2_370m_mempretrain_nomem_ft",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29602 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --batch_size 8 --grad_accum 2 --lr 1e-4 --warmup_steps 200 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix arxiv:1,omr:2 --eval_state_reset --max_steps 1000 --eval_every 250 --save_every 250 --num_mem_tokens 0",
+   "gpus": 2,
+   "gb": 30,
+   "expect": [
+    "outputs/gdn2_370m_mempretrain_nomem_ft/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  }
+ ]
+}
