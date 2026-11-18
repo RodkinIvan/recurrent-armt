@@ -44,7 +44,7 @@ def main():
     p.add_argument("--out", default="results/arxiv_holdout_overlap.json")
     p.add_argument("--min_chars", type=int, default=30_000, help="~8k tokens: the long documents of val_long_arxiv")
     p.add_argument("--n_long", type=int, default=64)
-    p.add_argument("--threads", type=int, default=16)
+    p.add_argument("--threads", type=int, default=2, help="few: more trips the Hub rate limit for every job")
     a = p.parse_args()
     src = SOURCES["arxiv"]
     read = lambda unit: (unit, read_unit(src.repo, unit[0], unit[1]))
