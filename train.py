@@ -49,6 +49,9 @@ def get_args():
     p.add_argument("--freeze_backbone", action="store_true", help="train only the memory parameters")
     p.add_argument("--freeze_backbone_steps", type=int, default=0,
                    help="train only the memory parameters for the first N steps; then the backbone joins with its own warmup")
+    p.add_argument("--backbone_lr_restart", action="store_true",
+                   help="with --freeze_backbone_steps: the unfrozen backbone warms up to the full --lr and decays over the "
+                        "remaining steps (default: it warms up to where the run's cosine has decayed to)")
     p.add_argument("--rnn_state_dropout", type=float, default=0.0,
                    help="reset each sample's recurrent state at a segment boundary with this probability (training)")
     p.add_argument("--rnn_state_dropout_steps", type=int, default=None, help="apply it for the first N steps only")
@@ -102,13 +105,15 @@ def all_reduce(t: torch.Tensor) -> torch.Tensor:
     return t
 
 
-def lr_at(step: int, a, start: int = 0) -> float:
+def lr_at(step: int, a, start: int = 0, restart: bool = False) -> float:
     """Linear warmup over warmup_steps from `start` (0 before it: a frozen group), cosine decay to
-    min_lr_ratio over the run."""
+    min_lr_ratio over the run; with ``restart``, the cosine runs from the end of that warmup to the end of the run
+    instead (a group unfrozen late starts from the full lr, not from where the run's schedule has decayed to)."""
     if step < start:
         return 0.0
     warm = min(1.0, (step - start + 1) / a.warmup_steps)
-    progress = min(1.0, max(0, step - a.warmup_steps) / max(1, a.max_steps - a.warmup_steps))
+    begin = start + a.warmup_steps if restart else a.warmup_steps
+    progress = min(1.0, max(0, step - begin) / max(1, a.max_steps - begin))
     return warm * (a.min_lr_ratio + (1 - a.min_lr_ratio) * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
@@ -346,7 +351,7 @@ def main():
         model.rnn_state_dropout = a.rnn_state_dropout if drop_on else 0.0
         lrs = {}
         for g in optimizer.param_groups:
-            g["lr"] = a.lr * g["lr_mult"] * lr_at(step, a, g["start"])
+            g["lr"] = a.lr * g["lr_mult"] * lr_at(step, a, g["start"], restart=a.backbone_lr_restart and g["name"] == "backbone")
             lrs[g["name"]] = g["lr"]
         for micro in range(a.grad_accum):
             x = torch.from_numpy(next(batches)).long().cuda(non_blocking=True)
