@@ -8,6 +8,9 @@ At every position t the model classifies y_t = x_1 ... x_t (no next-token shift)
 its last tenth. GDN-2's own recurrence is linear in its state; ARMT adds a nonlinear one, once per segment (layer i's
 memory-token outputs -> W_i -> layer i's input in the next segment), so the segment size sets how many steps of the
 word problem the backbone has to compose on its own.
+
+From scratch at length 64 nothing past position 1 is learned (outputs/st_a5_*); ``--curriculum`` grows the length
+instead, as the original ARMT groupmul runs did (staged lengths, each stage from the previous checkpoint).
 """
 from __future__ import annotations
 
@@ -43,9 +46,14 @@ def parse_args(argv=None):
     p.add_argument("--segment_size", type=int, default=2)
     # training
     p.add_argument("--train_len", type=int, default=64)
+    p.add_argument("--curriculum", default=None,
+                   help="comma list of training lengths, e.g. 4,8,16,32,64: train on the first, move to the next once the "
+                        "training accuracy (all positions, mean over a log interval) reaches --advance_acc; overrides --train_len")
+    p.add_argument("--advance_acc", type=float, default=0.99)
     p.add_argument("--steps", type=int, default=20000)
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--lr_schedule", default="cosine", choices=["cosine", "constant"], help="after the warmup")
     p.add_argument("--warmup_steps", type=int, default=500)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--grad_clip", type=float, default=1.0)
@@ -123,6 +131,8 @@ def main(argv=None):
     def lr_at(step):
         if step < a.warmup_steps:
             return a.lr * (step + 1) / a.warmup_steps
+        if a.lr_schedule == "constant":
+            return a.lr
         return a.lr * 0.5 * (1 + math.cos(math.pi * (step - a.warmup_steps) / max(1, a.steps - a.warmup_steps)))
 
     wandb = None
@@ -142,12 +152,14 @@ def main(argv=None):
         if wandb:
             wandb.log(entry, step=entry["step"])
 
+    lengths = [int(s) for s in a.curriculum.split(",")] if a.curriculum else [a.train_len]
+    stage = 0
     model.train()
     t0, loss_acc, acc_acc, k = time.time(), 0.0, 0.0, 0
     for step in range(1, a.steps + 1):
         for group in optimizer.param_groups:
             group["lr"] = lr_at(step - 1)
-        x, y = task.sample(a.batch_size, a.train_len)
+        x, y = task.sample(a.batch_size, lengths[stage])
         loss, acc = token_loss_acc(model, x, y)
         loss = loss.mean()
         optimizer.zero_grad(set_to_none=True)
@@ -156,12 +168,15 @@ def main(argv=None):
         optimizer.step()
         loss_acc, acc_acc, k = loss_acc + loss.item(), acc_acc + acc.mean().item(), k + 1
         if step % a.log_every == 0:
-            entry = {"step": step, "loss": loss_acc / k, "acc": acc_acc / k, "lr": lr_at(step - 1), "grad_norm": grad_norm,
-                     "sec_per_step": (time.time() - t0) / k}
+            entry = {"step": step, "loss": loss_acc / k, "acc": acc_acc / k, "train_len": lengths[stage], "lr": lr_at(step - 1),
+                     "grad_norm": grad_norm, "sec_per_step": (time.time() - t0) / k}
             if a.num_mem_tokens > 0:
                 entry["w_mv_rms"] = torch.stack([m.W_mv.weight.float().pow(2).mean() for m in model.memory_layers.values()]).mean().sqrt().item()
             print(" ".join(f"{k_}={v:.4g}" if isinstance(v, float) else f"{k_}={v}" for k_, v in entry.items()), flush=True)
             record(entry)
+            if stage + 1 < len(lengths) and entry["acc"] >= a.advance_acc:
+                stage += 1
+                print(f"curriculum: length {lengths[stage]} from step {step + 1}", flush=True)
             t0, loss_acc, acc_acc, k = time.time(), 0.0, 0.0, 0
         if step % a.eval_every == 0 or step == a.steps:
             entry = {"step": step, **evaluate(model, task, a)}

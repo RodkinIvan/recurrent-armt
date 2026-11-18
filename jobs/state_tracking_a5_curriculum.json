@@ -1,0 +1,127 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "scripts",
+  "tests",
+  "train.py",
+  "train_state_tracking.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "st_a5c_nomem",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --hidden 512 --heads 8 --head_dim 64 --mlp 2048 --layers 2 --batch_size 512 --lr 3e-4 --lr_schedule constant --warmup_steps 1000 --curriculum 4,6,8,10,12,16,20,24,32,48,64 --advance_acc 0.99 --steps 40000 --eval_every 2000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 0",
+   "gpus": 1,
+   "gb": 20,
+   "expect": [
+    "outputs/st_a5c_nomem/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5c_nomem_neg",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --hidden 512 --heads 8 --head_dim 64 --mlp 2048 --layers 2 --batch_size 512 --lr 3e-4 --lr_schedule constant --warmup_steps 1000 --curriculum 4,6,8,10,12,16,20,24,32,48,64 --advance_acc 0.99 --steps 40000 --eval_every 2000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 0 --allow_neg_eigval",
+   "gpus": 1,
+   "gb": 20,
+   "expect": [
+    "outputs/st_a5c_nomem_neg/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5c_armt_s2_m4",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --hidden 512 --heads 8 --head_dim 64 --mlp 2048 --layers 2 --batch_size 512 --lr 3e-4 --lr_schedule constant --warmup_steps 1000 --curriculum 4,6,8,10,12,16,20,24,32,48,64 --advance_acc 0.99 --steps 40000 --eval_every 2000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 4 --segment_size 2",
+   "gpus": 1,
+   "gb": 20,
+   "expect": [
+    "outputs/st_a5c_armt_s2_m4/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5c_armt_s2_m2",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --hidden 512 --heads 8 --head_dim 64 --mlp 2048 --layers 2 --batch_size 512 --lr 3e-4 --lr_schedule constant --warmup_steps 1000 --curriculum 4,6,8,10,12,16,20,24,32,48,64 --advance_acc 0.99 --steps 40000 --eval_every 2000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 2 --segment_size 2",
+   "gpus": 1,
+   "gb": 20,
+   "expect": [
+    "outputs/st_a5c_armt_s2_m2/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_a5c_armt_s5_m4",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task a5 --out_dir outputs/{name} --hidden 512 --heads 8 --head_dim 64 --mlp 2048 --layers 2 --batch_size 512 --lr 3e-4 --lr_schedule constant --warmup_steps 1000 --curriculum 4,6,8,10,12,16,20,24,32,48,64 --advance_acc 0.99 --steps 40000 --eval_every 2000 --eval_lens 16,64,256,1024 --eval_state_reset --wandb_project recurrent-armt --num_mem_tokens 4 --segment_size 5",
+   "gpus": 1,
+   "gb": 20,
+   "expect": [
+    "outputs/st_a5c_armt_s5_m4/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_parity_nomem",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task parity --out_dir outputs/{name} --train_len 64 --steps 5000 --eval_every 1000 --eval_lens 16,64,256,1024 --wandb_project recurrent-armt --num_mem_tokens 0",
+   "gpus": 1,
+   "gb": 6,
+   "expect": [
+    "outputs/st_parity_nomem/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "st_parity_nomem_neg",
+   "cmd": "export PYTHONPATH=.; {python} train_state_tracking.py --task parity --out_dir outputs/{name} --train_len 64 --steps 5000 --eval_every 1000 --eval_lens 16,64,256,1024 --wandb_project recurrent-armt --num_mem_tokens 0 --allow_neg_eigval",
+   "gpus": 1,
+   "gb": 6,
+   "expect": [
+    "outputs/st_parity_nomem_neg/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  }
+ ]
+}

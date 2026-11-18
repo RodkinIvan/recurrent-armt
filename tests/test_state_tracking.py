@@ -37,7 +37,8 @@ def test_products_match_a_fold():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="fla kernels need CUDA")
-@pytest.mark.parametrize("extra", [["--num_mem_tokens", "2", "--segment_size", "4", "--eval_state_reset"],
+@pytest.mark.parametrize("extra", [["--num_mem_tokens", "2", "--segment_size", "4", "--eval_state_reset",
+                                    "--curriculum", "4,8,12", "--advance_acc", "0", "--lr_schedule", "constant"],
                                    ["--num_mem_tokens", "0", "--allow_neg_eigval"]])
 def test_training_script_runs(tmp_path, extra):
     from train_state_tracking import main
@@ -46,6 +47,7 @@ def test_training_script_runs(tmp_path, extra):
           "--warmup_steps", "2", *extra])
     lines = [json.loads(l) for l in (tmp_path / "log.jsonl").read_text().splitlines()]
     assert [l["step"] for l in lines] == [3, 6, 6]
+    assert [l["train_len"] for l in lines if "train_len" in l] == ([4, 8] if "--curriculum" in extra else [16, 16])
     assert 0 <= lines[-1]["eval/acc_L20"] <= 1
     assert ("eval/reset/acc_L20" in lines[-1]) == ("--eval_state_reset" in extra)
     assert (tmp_path / "final" / "config.json").exists()
