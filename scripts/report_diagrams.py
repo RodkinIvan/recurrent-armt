@@ -79,10 +79,10 @@ def fig_models(out):
     ax.set(xlim=(0, 135), ylim=(-13, 54)); ax.axis("off")
 
     xs, ys, cw, ch = stack(ax, 1, [("gdn", "GDN\n+ ARMT")] * 3, "(a) GDN-2 370M: every layer is recurrent",
-                           "ARMT wraps all 24 layers; what crosses a boundary is fixed-size")
+                           "ARMT wraps all 16 layers; what crosses a boundary is fixed-size")
     ax.annotate("", (xs[0] - 2.5, ys[0]), (xs[0] - 2.5, ys[-1] + ch),
                 arrowprops=dict(arrowstyle="-", color=INK2, lw=1.2, shrinkA=0, shrinkB=0))
-    label(ax, xs[0] - 3.5, (ys[0] + ys[-1] + ch) / 2, "×8\n(24 layers)", ha="right", size=9)
+    label(ax, xs[0] - 3.5, (ys[0] + ys[-1] + ch) / 2, "16\nlayers", ha="right", size=9)
 
     rows = [("gdn", "GDN\n+ ARMT")] * 3 + [("att", "attention\n(unchanged)")]
     xs, ys, cw, ch = stack(ax, 70, rows, "(b) Qwen3.5-0.8B hybrid: 3 GDN layers, then 1 attention layer",

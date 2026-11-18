@@ -41,6 +41,10 @@ def get_args():
     p.add_argument("--num_mem_tokens", type=int, default=32, help="0 = no memory (the plain recurrent model, a baseline)")
     p.add_argument("--d_mem", type=int, default=64)
     p.add_argument("--mem_tokens_in_stream", action="store_true")
+    p.add_argument("--mem_init", default="random", choices=["random", "gdn_qk", "gdn_qkb", "gdn_qkvb"],
+                   help="initialize the memory from one GDN-2 head per layer (recurrent_armt/memory_init.py; needs "
+                        "--d_mem = the GDN head_dim): its query / key maps, + its erase gate, + its value path")
+    p.add_argument("--mem_init_head", default="slowest", help="which GDN head: slowest (smallest A_log), fastest, or an index")
     p.add_argument("--vertical", action="store_true", help="segments-first execution (default: layers-first)")
     p.add_argument("--freeze_backbone", action="store_true", help="train only the memory parameters")
     p.add_argument("--freeze_backbone_steps", type=int, default=0,
@@ -193,6 +197,14 @@ def main():
     if not a.no_grad_checkpointing:
         model.gradient_checkpointing_enable()
     model.cuda().train()
+    if a.mem_init != "random" and not a.init_from:   # a resume loads its own memory weights over this below
+        from recurrent_armt.memory_init import init_memory_from_gdn
+        calib = torch.from_numpy(val["val"][:4]).long().cuda()          # the same windows on every rank
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            report = init_memory_from_gdn(model, a.mem_init.removeprefix("gdn_"), calib, head=a.mem_init_head)
+        log(f"memory init {a.mem_init}: " + "; ".join(
+            f"L{r['layer']} h{r['head']}" + "".join(f" {k} {r[k]:.3g}" for k in ("beta_mean", "gate_mean", "value_rms", "residual_rms") if k in r)
+            for r in report))
     n_params = sum(p.numel() for p in model.parameters())
     n_memory = sum(p.numel() for n, p in model.named_parameters() if not n.startswith("model."))
     log(f"model: {type(model.model).__name__} {n_params / 1e6:.1f}M params ({n_memory / 1e6:.2f}M ARMT), window {window}")
