@@ -1,9 +1,14 @@
 """Real pretrained recurrent LMs (GPU; downloads small checkpoints).
 
-In fp32 the Triton kernels (mamba_ssm SSD, fla) multiply in TF32, so two chunkings of the same sequence
-differ by ~1e-3 relative on real models. The bounds are therefore set by a control: the base model's own
-cached decoding (``generate``) against its own forward on the same tokens. ARMT must agree with the base
-model (at init) and with itself (generation vs forward) about as well as the base model agrees with itself.
+Two chunkings of the same sequence (cached decoding vs one forward, segments vs the whole sequence) round
+differently, so the bounds are set by a control: the base model's own cached decoding (``generate``) against
+its own forward on the same tokens. ARMT must agree with the base model (at init) and with itself (generation
+vs forward) about as well as the base model agrees with itself.
+
+The comparisons run in real fp32 (conftest.py turns Triton's TF32 default off), and fla's RWKV-7 layer is kept
+off its tensor-core ``safe_gate`` chunk scheme (``exact_rwkv7_chunks``): both errors depend on the activations,
+so a control measured on the base model does not bound them for ARMT. Some fla kernels (e.g. ``solve_tril`` of
+the gated delta rule: GDN-2, Qwen3.5) ask for TF32 explicitly; there the control is ~1e-3 for both models alike.
 """
 from __future__ import annotations
 
@@ -24,13 +29,35 @@ CHECKPOINTS = ["state-spaces/mamba-130m-hf", "AntonV/mamba2-130m-hf"] + (["fla-h
 N_NEW = 140
 
 
+@pytest.fixture(scope="module", autouse=True)
+def exact_rwkv7_chunks():
+    """fla's RWKV-7 layer calls ``chunk_rwkv7(safe_gate=True, lower_bound=-0.6065, chunk_size=64)``: a tensor-core
+    scheme that factors the in-chunk decays around the middle row. On some activations it is off by >1e-2 relative
+    (2.4e-2 in one layer on a greedy continuation that repeats one token, also in IEEE fp32) where the default scheme
+    is off by ~1e-6, so the ARMT decoding-vs-forward error was set by fla's rounding rather than by ARMT. Same
+    function, default scheme (16-token sub-chunks with exact gate differences)."""
+    if not HAS_FLA:
+        yield
+        return
+    import fla.layers.rwkv7 as rwkv7
+    chunk = rwkv7.chunk_rwkv7
+
+    def default_scheme(*args, safe_gate=False, lower_bound=None, chunk_size=None, **kwargs):
+        return chunk(*args, **kwargs)
+
+    rwkv7.chunk_rwkv7 = default_scheme
+    yield
+    rwkv7.chunk_rwkv7 = chunk
+
+
 @pytest.fixture(scope="module", params=CHECKPOINTS)
 def models(request):
     """`base` is a separately loaded copy: if wrapping the model in ARMT changed its weights, ARMT@init would
-    no longer match it."""
+    no longer match it. Seeded: the memory projections (and the memory tokens) are drawn here."""
     base = load_base_model(request.param, dtype=torch.float32).cuda().eval()
     wrapped = load_base_model(request.param, dtype=torch.float32)
     cfg = RecurrentARMTConfig(num_mem_tokens=16, d_mem=32, segment_size=128)
+    torch.manual_seed(0)
     armt = RecurrentARMTForCausalLM(cfg, base_model=wrapped).cuda().eval()
     return request.param, base, armt
 
@@ -92,6 +119,7 @@ def test_init_equals_base(models, control):
 
 def test_active_memory_equivalences(models, control):
     name, base, armt = models
+    torch.manual_seed(0)
     with torch.no_grad():
         for memory in armt.memory_layers.values():
             memory.W_mv.weight.normal_(std=0.002)   # 0.02 adds ~50% random noise to every layer of a 768-d model: chaotic
