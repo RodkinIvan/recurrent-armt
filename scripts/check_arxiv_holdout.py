@@ -15,11 +15,10 @@ import hashlib
 import json
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from recurrent_armt.data import SOURCES, read_unit  # noqa: E402
+from recurrent_armt.data import SOURCES  # noqa: E402
 
 TITLE = re.compile(r"\\title\s*(?:\[[^\]]*\])?\s*\{(.{20,300}?)\}", re.S)
 ABSTRACT = re.compile(r"\\begin\{abstract\}(.{20,}?)\\end\{abstract\}", re.S)
@@ -44,22 +43,27 @@ def main():
     p.add_argument("--out", default="results/arxiv_holdout_overlap.json")
     p.add_argument("--min_chars", type=int, default=30_000, help="~8k tokens: the long documents of val_long_arxiv")
     p.add_argument("--n_long", type=int, default=64)
-    p.add_argument("--threads", type=int, default=2, help="few: more trips the Hub rate limit for every job")
     a = p.parse_args()
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download
     src = SOURCES["arxiv"]
-    read = lambda unit: (unit, read_unit(src.repo, unit[0], unit[1]))
-    with ThreadPoolExecutor(a.threads) as pool:
-        val = [t for _, texts in pool.map(read, src.val_units()) for t in texts]
-        print(f"held out: {len(val)} documents of {src.val_file}", flush=True)
-        seen = {"head": set(), "title": set(), "abstract": set()}
-        n_train = 0
-        for k, (unit, texts) in enumerate(pool.map(read, src.units())):
-            for t in texts:
-                for key, fp in fingerprints(t).items():
-                    seen[key].add(fp)
-            n_train += len(texts)
-            if k % 50 == 0:
-                print(f"training row groups read: {k + 1} / {len(src.units())}", flush=True)
+    repo, _, revision = src.repo.partition("@")
+    revision = {"~parquet": "refs/convert/parquet"}.get(revision, revision)        # HfFileSystem's alias
+    # whole files, one request each (row-group range reads trip the Hub rate limit for the training jobs too)
+    texts = lambda f: pq.read_table(hf_hub_download(repo, f, repo_type="dataset", revision=revision or None),
+                                    columns=["text"]).column("text").to_pylist()
+    val = texts(src.val_file)
+    print(f"held out: {len(val)} documents of {src.val_file}", flush=True)
+    seen = {"head": set(), "title": set(), "abstract": set()}
+    n_train = 0
+    for f, _ in src.files:
+        if f == src.val_file:
+            continue
+        for t in texts(f):
+            for key, fp in fingerprints(t).items():
+                seen[key].add(fp)
+            n_train += 1
+        print(f"read {f}: {n_train} training documents so far", flush=True)
     long_idx = [i for i, t in enumerate(val) if len(t) >= a.min_chars][:a.n_long]
     report = {"held_out_file": src.val_file, "held_out_docs": len(val), "train_docs": n_train}
     for name, idx in (("all", range(len(val))), ("long", long_idx)):
