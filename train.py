@@ -62,6 +62,8 @@ def get_args():
     p.add_argument("--batch_size", type=int, default=8, help="windows per GPU per micro-step")
     p.add_argument("--grad_accum", type=int, default=4)
     p.add_argument("--max_steps", type=int, default=10000)
+    p.add_argument("--stop_step", type=int, default=None,
+                   help="stop (evaluate, save, write final/) at this step; the lr schedule still runs over --max_steps")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--memory_lr_mult", type=float, default=1.0, help="lr multiplier of the ARMT memory parameters")
     p.add_argument("--warmup_steps", type=int, default=200)
@@ -343,7 +345,8 @@ def main():
     t0, tokens_seen = time.time(), 0
     seg_sums = torch.zeros(n, device="cuda")
     seg_counts = torch.zeros(n, device="cuda")
-    while step < a.max_steps:
+    end = min(a.max_steps, a.stop_step or a.max_steps)
+    while step < end:
         if frozen_until and step == frozen_until:
             now = sum(p.detach().double().sum().item() for p in backbone_params)
             log(f"step {step}: unfreezing the backbone (checksum {now:.6f}, unchanged: {now == checksum})")
@@ -387,9 +390,9 @@ def main():
                 f"gnorm {grad_norm.item():.2f} {tokens_seen / dt / 1e3:.1f}k tok/s mem {torch.cuda.max_memory_allocated() / 2**30:.1f}G")
             seg_sums.zero_(), seg_counts.zero_()
             t0, tokens_seen = time.time(), 0
-        if step % a.eval_every == 0 or step == a.max_steps:
+        if step % a.eval_every == 0 or step == end:
             run_eval()
-        if step % a.save_every == 0 or step == a.max_steps:
+        if step % a.save_every == 0 or step == end:
             save()
 
     if is_main:
