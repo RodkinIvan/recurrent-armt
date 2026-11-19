@@ -3,6 +3,9 @@ one paper in different files, so a file-level hold-out does not guarantee unseen
 
     python scripts/check_arxiv_holdout.py [--out results/arxiv_holdout_overlap.json]
 
+Near duplicates (another version of the paper): the share of a held-out document's sampled 13-word passages that
+occur anywhere in the training files (``passages_*``; boilerplate gives every paper a few percent).
+
 Every document gets three fingerprints: its \\title{...}, its abstract (first 400 characters) and its first 2000
 characters, each lower-cased with whitespace collapsed (a title / abstract under 20 characters is skipped). The script
 counts held-out documents with a fingerprint that also occurs in a training file, for the whole file and for the long
@@ -38,6 +41,13 @@ def fingerprints(text: str) -> dict[str, str]:
     return out
 
 
+def passages(text: str, n: int = 13, keep: int = 32) -> set[int]:
+    """Sampled n-word passages (content-defined: those whose hash is 0 mod ``keep``, so an edit elsewhere in the
+    paper does not shift them). Python's hash is salted per process, which is fine within one run."""
+    w = norm(text).split()
+    return {h for h in (hash(tuple(w[i:i + n])) for i in range(len(w) - n + 1)) if h % keep == 0}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="results/arxiv_holdout_overlap.json")
@@ -55,6 +65,7 @@ def main():
     val = texts(src.val_file)
     print(f"held out: {len(val)} documents of {src.val_file}", flush=True)
     seen = {"head": set(), "title": set(), "abstract": set()}
+    seen_passages: set[int] = set()
     n_train = 0
     for f, _ in src.files:
         if f == src.val_file:
@@ -62,6 +73,7 @@ def main():
         for t in texts(f):
             for key, fp in fingerprints(t).items():
                 seen[key].add(fp)
+            seen_passages |= passages(t)
             n_train += 1
         print(f"read {f}: {n_train} training documents so far", flush=True)
     long_idx = [i for i, t in enumerate(val) if len(t) >= a.min_chars][:a.n_long]
@@ -74,6 +86,18 @@ def main():
             r[f"{key}_present"] = len(have)
             r[f"{key}_in_train"] = sum(f[key] in seen[key] for f in have)
         r["any_in_train"] = sum(any(f[k] in seen[k] for k in f) for f in fps)
+        shared = []                                       # per document: the share of its passages seen in training
+        for i in idx:
+            ps = passages(val[i])
+            if len(ps) >= 20:
+                shared.append(len(ps & seen_passages) / len(ps))
+        shared.sort()
+        r["passages_docs"] = len(shared)
+        r["passages_shared_median"] = shared[len(shared) // 2] if shared else None
+        r["passages_shared_p90"] = shared[int(len(shared) * 0.9)] if shared else None
+        r["passages_shared_max"] = shared[-1] if shared else None
+        r["passages_over_50pct"] = sum(x > 0.5 for x in shared)
+        r["passages_over_20pct"] = sum(x > 0.2 for x in shared)
         r["any_in_train_docs"] = [i for i, f in zip(idx, fps) if any(f[k] in seen[k] for k in f)][:50]
         report[name] = r
     print(json.dumps(report, indent=1))
