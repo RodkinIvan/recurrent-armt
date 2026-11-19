@@ -219,12 +219,109 @@ def fig_math(out):
     fig.savefig(out / "fig7_math_state_dropout.png", dpi=160)
 
 
+def fig_mem_init(out):
+    """GDN-2 370M, frozen backbone, state reset at every boundary: the memory initialized at random vs from GDN-2 heads."""
+    arms = [("random", "random", GRAY), ("gdn_qk", "GDN q, k", BLUE), ("gdn_qkb", "GDN q, k, beta", AQUA),
+            ("gdn_qkvb", "GDN q, k, beta, v", ORANGE)]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    for ax, key, name in ((axes[0], "val_long_arxiv_reset", "arXiv, state reset"), (axes[1], "val_long_omr_reset", "OpenMathReasoning, state reset")):
+        for arm, label, color in arms:
+            ev = evals(f"gdn2_370m_meminit_{arm}")
+            xs = [s_ for s_ in ev if s_ >= 200]
+            ys = [ev[s_][f"{key}/loss"] for s_ in xs]
+            ax.plot(xs, ys, color=color, marker="o", ms=4, label=label)
+        ax.set(title=name, xlabel="step (backbone frozen, memory only)", ylabel="loss")
+        ax.legend(fontsize=9)
+    fig.suptitle("Memory initialized from GDN-2 heads beats random init by 0.03-0.05 nats after 1k steps",
+                 x=0.01, ha="left", fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out / "fig8_memory_init.png", dpi=160)
+
+
+PRE_SETS = [("val_long_arxiv", "arXiv"), ("val_long_omr", "OpenMath-\nReasoning"), ("val_long", "FineWeb-Edu\nlong docs")]
+
+
+def fig_mem_pretrain(out):
+    """Math-only memory pretraining (backbone frozen, state reset) and a 1k full fine-tune from its step 5000, vs a
+    no-memory GDN-2 fine-tuned 1k steps the same way."""
+    main_, branch, ctrl = (evals("gdn2_370m_mempretrain_qkvb"), evals("gdn2_370m_mempretrain_qkvb_5k_ft"),
+                           evals("gdn2_370m_mempretrain_nomem_ft"))
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.9), gridspec_kw={"width_ratios": [1, 1.2]})
+    ax = axes[0]
+    for key, name, color in (("val_long_arxiv_reset", "arXiv, state reset", BLUE), ("val_long_omr_reset", "OMR, state reset", AQUA)):
+        xs = [s_ for s_ in main_ if s_ >= 500]
+        ax.plot(xs, [main_[s_][f"{key}/loss"] for s_ in xs], color=color, marker="o", ms=4, label=f"ARMT, memory only: {name}")
+        xb = [5000 + s_ for s_ in branch if s_ > 0]
+        ax.plot(xb, [branch[s_][f"{key}/loss"] for s_ in branch if s_ > 0], color=color, ls="--", marker="s", ms=4)
+        ax.axhline(ctrl[1000][f"{key}/loss"], color=color, lw=1, ls=":")
+    ax.axvline(5000, color=GRID, lw=1.2)
+    ax.annotate("dashed: from step 5000,\n1k full fine-tune\n(evaluated with reset)", (5080, 2.35), fontsize=9, color=INK2, va="center")
+    ax.set(title="Memory pretraining (dotted: no-memory GDN-2, 1k full fine-tune)", xlabel="step", ylabel="loss")
+    ax.title.set_fontsize(10.5)
+    ax.legend(fontsize=8.5, loc="center left")
+    ax = axes[1]
+    a, c = branch[max(branch)], ctrl[1000]
+    groups = [(k + "_reset", n + "\nstate reset") for k, n in PRE_SETS] + [(k, n + "\nstate kept") for k, n in PRE_SETS]
+    vals = [1000 * (c[f"{g}/loss"] - a[f"{g}/loss"]) for g, _ in groups]
+    bars = ax.bar(range(len(groups)), vals, 0.6, color=[BLUE if v >= 0 else ORANGE for v in vals])
+    for b, v in zip(bars, vals):
+        ax.annotate(f"{v:+.1f}", (b.get_x() + b.get_width() / 2, max(v, 0)), xytext=(0, 3), textcoords="offset points",
+                    ha="center", fontsize=8.5, color=INK2)
+    ax.axhline(0, color=INK2, lw=1)
+    ax.axvline(2.5, color=GRID, lw=1.2)
+    ax.set_xticks(range(len(groups)), [n for _, n in groups], fontsize=8.5)
+    ax.set(ylabel="loss(no memory) - loss(ARMT), millinats", title="5k memory-only + 1k full vs 1k full, no memory")
+    ax.title.set_fontsize(10.5)
+    fig.suptitle("Memory pretraining on long math: the memory helps after a state reset, ties with the state kept, costs on FineWeb",
+                 x=0.01, ha="left", fontweight="bold", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out / "fig9_memory_pretraining.png", dpi=160)
+
+
+def fig_state_tracking(out):
+    """A5 word problem, tiny GDN-2 (2 layers, 512) with a length curriculum: the longest length each arm passed."""
+    arms = [("st_a5c_nomem", "GDN-2", GRAY), ("st_a5c_nomem_neg", "GDN-2, neg. eigenvalues", GRAY),
+            ("st_a5c6_armt_s5_m4", "ARMT seg 5, 4 mem", YELLOW), ("st_a5c6_armt_s5_m2", "ARMT seg 5, 2 mem", YELLOW),
+            ("st_a5c_armt_s2_m4", "ARMT seg 2, 4 mem", AQUA), ("st_a5c_armt_s2_m2", "ARMT seg 2, 2 mem", BLUE)]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), gridspec_kw={"width_ratios": [1.3, 1]})
+    ax = axes[0]
+    for run, label, color in arms:
+        rows = [json.loads(l) for l in open(Path("outputs") / run / "log.jsonl")]
+        tr = [r for r in rows if "train_len" in r]
+        off = {"st_a5c_nomem_neg": -0.08, "st_a5c6_armt_s5_m4": 0.08}.get(run, 0)        # keep overlapping lines apart
+        ax.step([r["step"] for r in tr], [r["train_len"] + off for r in tr], where="post", color=color, label=label,
+                ls="--" if ("neg" in run or "m4" in run) else "-")
+    ax.set(title="Curriculum: training length reached (advance at 99% accuracy)", xlabel="step", ylabel="training length")
+    ax.title.set_fontsize(10.5)
+    ax.legend(fontsize=8.5, loc="upper left")
+    ax = axes[1]
+    accs, resets = [], []
+    for run, _, _ in arms:
+        rows = [json.loads(l) for l in open(Path("outputs") / run / "log.jsonl")]
+        e = [r for r in rows if "eval/acc_L16" in r][-1]
+        accs.append(e["eval/acc_L16"])
+        resets.append(e.get("eval/reset/acc_L16"))
+    y = range(len(arms))
+    ax.barh(y, accs, 0.6, color=[c for _, _, c in arms])
+    for i, (v, r) in enumerate(zip(accs, resets)):
+        ax.annotate(f"{v:.2f}" + (f"  (state reset {r:.2f})" if r is not None else ""), (v, i), xytext=(4, 0),
+                    textcoords="offset points", va="center", fontsize=8.5, color=INK2)
+    ax.set_yticks(list(y), [l for _, l, _ in arms], fontsize=9)
+    ax.set(xlim=(0, 1), xlabel="accuracy over positions 1-16 (chance 1/60)", title="Length 16, after 40k steps")
+    ax.title.set_fontsize(10.5)
+    fig.suptitle("A5 state tracking: only ARMT with 2-token segments gets past length 6 (reaches 12)",
+                 x=0.01, ha="left", fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out / "fig10_state_tracking_a5.png", dpi=160)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", default="reports/figures")
     out = Path(p.parse_args().out)
     out.mkdir(parents=True, exist_ok=True)
-    for f in (fig_tie, fig_rewarm, fig_state_dropout, fig_ablation, fig_hybrid, fig_math):
+    for f in (fig_tie, fig_rewarm, fig_state_dropout, fig_ablation, fig_hybrid, fig_math, fig_mem_init, fig_mem_pretrain,
+              fig_state_tracking):
         f(out)
     print("figures in", out)
 
