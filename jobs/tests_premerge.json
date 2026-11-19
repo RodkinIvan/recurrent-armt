@@ -1,0 +1,36 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py",
+  "train_state_tracking.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "results/{name}.txt"
+ ],
+ "jobs": [
+  {
+   "name": "tests_gpu_full_premerge",
+   "cmd": "export PYTHONPATH=.; mkdir -p results && {python} -m pytest -s -p no:warnings -rA tests > results/{name}.txt 2>&1; tail -3 results/{name}.txt",
+   "gpus": 1,
+   "gb": 20,
+   "expect": [
+    "results/tests_gpu_full_premerge.txt"
+   ],
+   "hosts": [
+    "mbz_nlp",
+    "mbz_nlp2.10",
+    "mbz_nlp2"
+   ]
+  }
+ ]
+}
