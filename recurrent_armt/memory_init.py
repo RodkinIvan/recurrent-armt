@@ -18,6 +18,15 @@ the values unit-rms as GDN's output norm does. The read is a weighted mean of va
 head's output.
 
 Parts: ``qk`` (W_mv stays 0: the model is still exactly the base model), ``qkb``, ``qkvb``.
+
+A memory smaller than the head (d_mem < head_dim): the head's query / key maps are projected to d_mem with one shared
+matrix P [d_mem, head_dim] with orthonormal rows, W_mq <- P (q map), W_mk <- P (k map), so that q'.k' = q^T P^T P k keeps
+the part of the head's query-key similarity that lies in P's subspace. ``reduce``:
+  * ``pca``: P = the top d_mem eigenvectors of E[q q^T] + E[k k^T] over the calibration tokens (q, k: the head's queries
+    on the layer's input and keys on its output, as the memory reads and writes them, each scaled to unit length: the
+    memory's features are length-normalized);
+  * ``random``: a random orthonormal P (the baseline for ``pca``).
+W_mb and W_mv do not depend on d_mem.
 """
 from __future__ import annotations
 
@@ -58,19 +67,44 @@ def _gate(attn, normed: torch.Tensor, h: int, d: int) -> torch.Tensor:
     return (torch.nn.functional.silu(g) if act in ("swish", "silu") else torch.sigmoid(g)).mean(0)
 
 
+def reduction(q: torch.Tensor | None, k: torch.Tensor | None, d_mem: int, reduce: str, d: int,
+              seed: int = 0) -> tuple[torch.Tensor, float]:
+    """P [d_mem, d] with orthonormal rows, and the share of E[q q^T] + E[k k^T] (unit-length samples) it keeps
+    (q, k: [N, d]; None, for a random P without calibration data: the share of an isotropic spectrum)."""
+    unit = lambda x: x / x.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    if q is None:
+        if reduce == "pca":
+            raise ValueError("a PCA reduction needs calibration data")
+        C = torch.eye(d)
+    else:
+        C = (unit(q).T @ unit(q)) / len(q) + (unit(k).T @ unit(k)) / len(k)                  # [d, d]
+    if reduce == "pca":
+        P = torch.linalg.eigh(C).eigenvectors[:, -d_mem:].flip(-1).T.contiguous()           # largest first
+    elif reduce == "random":
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        P = torch.linalg.qr(torch.randn(d, d_mem, generator=g))[0].T.to(C)
+    else:
+        raise ValueError(f"reduce: pca / random, not {reduce!r}")
+    return P, (torch.trace(P @ C @ P.T) / torch.trace(C)).item()
+
+
 @torch.no_grad()
 def init_memory_from_gdn(model: RecurrentARMTForCausalLM, parts: str, calib_ids: torch.Tensor | None = None,
-                         head: str | int = "slowest") -> list[dict]:
+                         head: str | int = "slowest", reduce: str = "pca") -> list[dict]:
     """Overwrite the memory parameters of every wrapped layer (see the module docstring). ``calib_ids`` [B, T] (real
-    text) is needed for the parts that are calibrated (``b``, ``v``). Returns, per layer, what was done."""
+    text) is needed for the parts that are calibrated (``b``, ``v``) and for ``reduce="pca"`` when d_mem < head_dim.
+    Returns, per layer, what was done."""
     if model.config.base_model_config.get("model_type") != "gdn2_lm":
         raise ValueError("the GDN initialization needs a GDN-2 backbone (gdn2_lm)")
     use = PARTS[parts]
     layers = model.backbone.inner.layers
     stream = None
-    if {"b", "v"} & set(use):
+    d_head = layers[int(next(iter(model.memory_layers)))].attn.head_k_dim
+    small = next(iter(model.memory_layers.values())).d_mem < d_head
+    if {"b", "v"} & set(use) or (small and reduce == "pca"):
         if calib_ids is None:
-            raise ValueError(f"parts={parts!r} needs calibration input ids")
+            raise ValueError(f"parts={parts!r}{' with a PCA reduction' if small else ''} needs calibration input ids")
+    if calib_ids is not None and ({"b", "v"} & set(use) or small):       # (a random P: only to report what it keeps)
         stream = residual_stream(model, calib_ids)
     report = []
     for key, memory in model.memory_layers.items():
@@ -78,8 +112,8 @@ def init_memory_from_gdn(model: RecurrentARMTForCausalLM, parts: str, calib_ids:
         block = layers[i]
         attn = block.attn
         d = attn.head_k_dim
-        if memory.n_heads != 1 or memory.d_mem != d or attn.head_v_dim != d:
-            raise ValueError(f"layer {i}: the GDN init needs one memory head with d_mem = GDN head_dim ({d}); "
+        if memory.n_heads != 1 or memory.d_mem > d or attn.head_v_dim != d:
+            raise ValueError(f"layer {i}: the GDN init needs one memory head with d_mem <= GDN head_dim ({d}); "
                              f"have n_heads={memory.n_heads}, d_mem={memory.d_mem}")
         h = pick_head(attn, head)
         rows = slice(h * d, (h + 1) * d)
@@ -87,10 +121,20 @@ def init_memory_from_gdn(model: RecurrentARMTForCausalLM, parts: str, calib_ids:
         tap = lambda conv: conv.weight[rows, 0, -1].float()          # causal conv: the last tap multiplies x_t
         dtype = memory.W_mq.weight.dtype
         entry = {"layer": i, "head": h, "A_log": attn.A_log[h].item()}
+        q_map = tap(attn.q_conv1d)[:, None] * attn.q_proj.weight[rows].float() * n1          # [d, D]
+        k_map = tap(attn.k_conv1d)[:, None] * attn.k_proj.weight[rows].float() * n1
+        P = None
+        if memory.d_mem < d:            # project the head's query / key space to d_mem (see the module docstring)
+            with torch.autocast(q_map.device.type, enabled=False):         # fp32 (train.py calls this under bf16 autocast)
+                q = stream[i] @ q_map.T if stream is not None else None      # reads: the layer's input
+                k = stream[i + 1] @ k_map.T if stream is not None else None  # writes: the memory tokens' outputs
+                P, kept = reduction(q, k, memory.d_mem, reduce, d, seed=i)
+            P = P.to(q_map.device)
+            entry["reduce"], entry["qk_energy_kept"] = reduce, kept
         if "q" in use:
-            memory.W_mq.weight.copy_((tap(attn.q_conv1d)[:, None] * attn.q_proj.weight[rows].float() * n1).to(dtype))
+            memory.W_mq.weight.copy_((q_map if P is None else P @ q_map).to(dtype))
         if "k" in use:
-            memory.W_mk.weight.copy_((tap(attn.k_conv1d)[:, None] * attn.k_proj.weight[rows].float() * n1).to(dtype))
+            memory.W_mk.weight.copy_((k_map if P is None else P @ k_map).to(dtype))
         x = stream[i + 1] if stream is not None else None          # after the layer: what the memory tokens write
         if "b" in use:
             r = x.pow(2).mean(-1).sqrt().mean()

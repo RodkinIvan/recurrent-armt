@@ -1,0 +1,66 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "recurrent_armt",
+  "tests",
+  "scripts",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "gdn2_370m_meminit_d32_random",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29621 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --max_steps 1000 --batch_size 8 --grad_accum 2 --lr 1e-4 --memory_lr_mult 3 --warmup_steps 60 --eval_every 200 --save_every 500 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix fineweb:4,arxiv:1,omr:2 --eval_state_reset --rnn_state_dropout 1.0 --freeze_backbone --d_mem 32 --mem_init random",
+   "gpus": 2,
+   "gb": 26,
+   "expect": [
+    "outputs/gdn2_370m_meminit_d32_random/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "gdn2_370m_meminit_d32_gdn_qkvb_pca",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29622 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --max_steps 1000 --batch_size 8 --grad_accum 2 --lr 1e-4 --memory_lr_mult 3 --warmup_steps 60 --eval_every 200 --save_every 500 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix fineweb:4,arxiv:1,omr:2 --eval_state_reset --rnn_state_dropout 1.0 --freeze_backbone --d_mem 32 --mem_init gdn_qkvb --mem_init_reduce pca",
+   "gpus": 2,
+   "gb": 26,
+   "expect": [
+    "outputs/gdn2_370m_meminit_d32_gdn_qkvb_pca/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "gdn2_370m_meminit_d32_gdn_qkvb_randproj",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29623 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --max_steps 1000 --batch_size 8 --grad_accum 2 --lr 1e-4 --memory_lr_mult 3 --warmup_steps 60 --eval_every 200 --save_every 500 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix fineweb:4,arxiv:1,omr:2 --eval_state_reset --rnn_state_dropout 1.0 --freeze_backbone --d_mem 32 --mem_init gdn_qkvb --mem_init_reduce random",
+   "gpus": 2,
+   "gb": 26,
+   "expect": [
+    "outputs/gdn2_370m_meminit_d32_gdn_qkvb_randproj/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  }
+ ]
+}

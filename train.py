@@ -45,6 +45,9 @@ def get_args():
                    help="initialize the memory from one GDN-2 head per layer (recurrent_armt/memory_init.py; needs "
                         "--d_mem = the GDN head_dim): its query / key maps, + its erase gate, + its value path")
     p.add_argument("--mem_init_head", default="slowest", help="which GDN head: slowest (smallest A_log), fastest, or an index")
+    p.add_argument("--mem_init_reduce", default="pca", choices=["pca", "random"],
+                   help="d_mem < GDN head_dim: project the head's query / key maps to d_mem along its top principal "
+                        "directions (pca, on the calibration windows) or a random orthonormal projection")
     p.add_argument("--vertical", action="store_true", help="segments-first execution (default: layers-first)")
     p.add_argument("--freeze_backbone", action="store_true", help="train only the memory parameters")
     p.add_argument("--freeze_backbone_steps", type=int, default=0,
@@ -210,9 +213,10 @@ def main():
         # windows: DDP copies rank 0's parameters to the other ranks when it wraps the model, so rank 0's init is used
         calib = torch.from_numpy(stream.peek(4)).long().cuda()
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            report = init_memory_from_gdn(model, a.mem_init.removeprefix("gdn_"), calib, head=a.mem_init_head)
+            report = init_memory_from_gdn(model, a.mem_init.removeprefix("gdn_"), calib, head=a.mem_init_head,
+                                          reduce=a.mem_init_reduce)
         log(f"memory init {a.mem_init}: " + "; ".join(
-            f"L{r['layer']} h{r['head']}" + "".join(f" {k} {r[k]:.3g}" for k in ("beta_mean", "gate_mean", "value_rms", "residual_rms") if k in r)
+            f"L{r['layer']} h{r['head']}" + "".join(f" {k} {r[k]:.3g}" for k in ("qk_energy_kept", "beta_mean", "gate_mean", "value_rms", "residual_rms") if k in r)
             for r in report))
     n_params = sum(p.numel() for p in model.parameters())
     n_memory = sum(p.numel() for n, p in model.named_parameters() if not n.startswith("model."))
