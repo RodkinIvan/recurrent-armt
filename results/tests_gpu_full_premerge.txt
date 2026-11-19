@@ -1,0 +1,1481 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/ivan.rodkin/router/recurrent_armt
+plugins: platformdirs-4.14.5, anyio-4.16.0
+collected 282 items
+
+tests/test_armt.py .../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+....../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+...mamba in_stream=False: max |H - V| = 0.000e+00, bitwise equal: True
+.mamba2 in_stream=False: max |H - V| = 0.000e+00, bitwise equal: True
+.qwen3_5 in_stream=False: max |H - V| = 3.874e-07, bitwise equal: False
+.rwkv7 in_stream=False: max |H - V| = 0.000e+00, bitwise equal: True
+.gated_deltanet in_stream=False: max |H - V| = 0.000e+00, bitwise equal: True
+.gdn2 in_stream=False: max |H - V| = 0.000e+00, bitwise equal: True
+.mamba in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+.mamba2 in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+.qwen3_5 in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+.gated_deltanet in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+.gdn2 in_stream=True: max |H - V| = 0.000e+00, bitwise equal: True
+..../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+...mamba in_stream=False vertical=False: max |gen - fwd| = 7.153e-07
+.mamba2 in_stream=False vertical=False: max |gen - fwd| = 4.828e-06
+.qwen3_5 in_stream=False vertical=False: max |gen - fwd| = 3.278e-07
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 in_stream=False vertical=False: max |gen - fwd| = 4.932e-06
+.gated_deltanet in_stream=False vertical=False: max |gen - fwd| = 6.109e-07
+.gdn2 in_stream=False vertical=False: max |gen - fwd| = 1.252e-06
+.mamba in_stream=True vertical=False: max |gen - fwd| = 8.941e-07
+.mamba2 in_stream=True vertical=False: max |gen - fwd| = 3.703e-06
+.qwen3_5 in_stream=True vertical=False: max |gen - fwd| = 3.874e-07
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 in_stream=True vertical=False: max |gen - fwd| = 5.603e-06
+.gated_deltanet in_stream=True vertical=False: max |gen - fwd| = 8.941e-07
+.gdn2 in_stream=True vertical=False: max |gen - fwd| = 1.371e-06
+.mamba in_stream=False vertical=True: max |gen - fwd| = 7.153e-07
+.mamba2 in_stream=False vertical=True: max |gen - fwd| = 4.828e-06
+.qwen3_5 in_stream=False vertical=True: max |gen - fwd| = 4.321e-07
+.rwkv7 in_stream=False vertical=True: max |gen - fwd| = 4.932e-06
+.gated_deltanet in_stream=False vertical=True: max |gen - fwd| = 6.109e-07
+.gdn2 in_stream=False vertical=True: max |gen - fwd| = 1.252e-06
+.mamba in_stream=True vertical=True: max |gen - fwd| = 8.941e-07
+.mamba2 in_stream=True vertical=True: max |gen - fwd| = 3.703e-06
+.qwen3_5 in_stream=True vertical=True: max |gen - fwd| = 3.874e-07
+.rwkv7 in_stream=True vertical=True: max |gen - fwd| = 5.603e-06
+.gated_deltanet in_stream=True vertical=True: max |gen - fwd| = 8.941e-07
+.gdn2 in_stream=True vertical=True: max |gen - fwd| = 1.371e-06
+.........................mamba in_stream=False: state = 8 tensors, 36608 bytes for batch 2
+.mamba2 in_stream=False: state = 8 tensors, 90368 bytes for batch 2
+.srwkv7 in_stream=False: state = 15 tensors, 253056 bytes for batch 2
+.gated_deltanet in_stream=False: state = 12 tensors, 393984 bytes for batch 2
+.gdn2 in_stream=False: state = 12 tensors, 254720 bytes for batch 2
+.mamba in_stream=True: state = 8 tensors, 36608 bytes for batch 2
+.mamba2 in_stream=True: state = 8 tensors, 90368 bytes for batch 2
+.srwkv7 in_stream=True: state = 15 tensors, 253056 bytes for batch 2
+.gated_deltanet in_stream=True: state = 12 tensors, 393984 bytes for batch 2
+.gdn2 in_stream=True: state = 12 tensors, 254720 bytes for batch 2
+.mamba in_stream=False: |dL/dx_seg0| both=9.132e+00 memory-only=9.124e+00 rnn-only=9.471e-03 none=0.000e+00
+.mamba2 in_stream=False: |dL/dx_seg0| both=9.478e+01 memory-only=9.419e+01 rnn-only=4.509e-01 none=0.000e+00
+.qwen3_5 in_stream=False: |dL/dx_seg0| both=3.655e+01 memory-only=3.085e+01 rnn-only=1.321e+01 none=0.000e+00
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 in_stream=False: |dL/dx_seg0| both=7.291e+04 memory-only=7.156e+04 rnn-only=8.325e+02 none=0.000e+00
+.gated_deltanet in_stream=False: |dL/dx_seg0| both=9.096e+01 memory-only=8.776e+01 rnn-only=7.277e+00 none=0.000e+00
+.gdn2 in_stream=False: |dL/dx_seg0| both=2.484e+01 memory-only=2.345e+01 rnn-only=2.984e+00 none=0.000e+00
+.mamba in_stream=True: |dL/dx_seg0| both=1.078e+01 memory-only=9.742e+00 rnn-only=7.904e-03 none=0.000e+00
+.mamba2 in_stream=True: |dL/dx_seg0| both=9.335e+01 memory-only=9.227e+01 rnn-only=4.435e-01 none=0.000e+00
+.qwen3_5 in_stream=True: |dL/dx_seg0| both=3.649e+01 memory-only=3.076e+01 rnn-only=1.172e+01 none=0.000e+00
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 in_stream=True: |dL/dx_seg0| both=2.193e+04 memory-only=2.197e+04 rnn-only=4.623e+02 none=0.000e+00
+.gated_deltanet in_stream=True: |dL/dx_seg0| both=9.331e+01 memory-only=9.027e+01 rnn-only=6.169e+00 none=0.000e+00
+.gdn2 in_stream=True: |dL/dx_seg0| both=2.436e+01 memory-only=2.343e+01 rnn-only=2.412e+00 none=0.000e+00
+.............mamba: grad checkpointing max rel grad diff 2.235e-07
+.mamba2: grad checkpointing max rel grad diff 0.000e+00
+.qwen3_5: grad checkpointing max rel grad diff 0.000e+00
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7: grad checkpointing max rel grad diff 0.000e+00
+.gated_deltanet: grad checkpointing max rel grad diff 0.000e+00
+.gdn2: grad checkpointing max rel grad diff 0.000e+00
+.mamba: grad checkpointing max rel grad diff 1.490e-07
+.mamba2: grad checkpointing max rel grad diff 0.000e+00
+.qwen3_5: grad checkpointing max rel grad diff 0.000e+00
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7: grad checkpointing max rel grad diff 0.000e+00
+.gated_deltanet: grad checkpointing max rel grad diff 0.000e+00
+.gdn2: grad checkpointing max rel grad diff 0.000e+00
+.mamba: V vs H max rel grad diff 2.161e-07
+.mamba2: V vs H max rel grad diff 0.000e+00
+.qwen3_5: V vs H max rel grad diff 5.066e-07
+.rwkv7: V vs H max rel grad diff 0.000e+00
+.gated_deltanet: V vs H max rel grad diff 0.000e+00
+.gdn2: V vs H max rel grad diff 0.000e+00
+.......mamba: kernels vs reference max rel grad diff 2.265e-06
+.mamba2: kernels vs reference max rel grad diff 2.844e-06
+.Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 157.19it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 12719.36it/s]
+.Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 783.10it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 15166.62it/s]
+.Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 287.06it/s]
+Loading weights:   0%|          | 0/82 [00:00<?, ?it/s]Loading weights: 100%|██████████| 82/82 [00:00<00:00, 13895.16it/s]
+.Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 212.03it/s]
+Loading weights:   0%|          | 0/118 [00:00<?, ?it/s]Loading weights: 100%|██████████| 118/118 [00:00<00:00, 13974.30it/s]
+.Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 314.32it/s]
+Loading weights:   0%|          | 0/50 [00:00<?, ?it/s]Loading weights: 100%|██████████| 50/50 [00:00<00:00, 13846.24it/s]
+.Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 360.12it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 15680.65it/s]
+..../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+W1119 15:39:55.334000 3183832 site-packages/torch/_dynamo/convert_frame.py:1358] [0/8] torch._dynamo hit config.recompile_limit (8)
+W1119 15:39:55.334000 3183832 site-packages/torch/_dynamo/convert_frame.py:1358] [0/8]    function: 'sqrelu_fwd' (/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/modules/activations/ops.py:504)
+W1119 15:39:55.334000 3183832 site-packages/torch/_dynamo/convert_frame.py:1358] [0/8]    last reason: 0/7: GLOBAL_STATE changed: autocast 
+W1119 15:39:55.334000 3183832 site-packages/torch/_dynamo/convert_frame.py:1358] [0/8] To log all recompilation reasons, use TORCH_LOGS="recompiles".
+W1119 15:39:55.334000 3183832 site-packages/torch/_dynamo/convert_frame.py:1358] [0/8] To diagnose recompilation issues, see https://pytorch.org/docs/main/torch.compiler_troubleshooting.html
+.....s/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+...mamba: state reset: |dL/dx_seg0| memory 8.174e+00, memory cut 0.000e+00
+.mamba2: state reset: |dL/dx_seg0| memory 9.315e+01, memory cut 0.000e+00
+.qwen3_5: state reset: |dL/dx_seg0| memory 3.670e+01, memory cut 1.333e+01
+.rwkv7: state reset: |dL/dx_seg0| memory 5.711e+04, memory cut 0.000e+00
+.gated_deltanet: state reset: |dL/dx_seg0| memory 8.527e+01, memory cut 0.000e+00
+.gdn2: state reset: |dL/dx_seg0| memory 2.398e+01, memory cut 0.000e+00
+...................mamba: peak extra memory 1.40 MiB (8 segments) vs 1.40 MiB (64 segments)
+.mamba2: peak extra memory 1.35 MiB (8 segments) vs 1.35 MiB (64 segments)
+.srwkv7: peak extra memory 3.49 MiB (8 segments) vs 3.49 MiB (64 segments)
+.gated_deltanet: peak extra memory 4.83 MiB (8 segments) vs 4.83 MiB (64 segments)
+.gdn2: peak extra memory 3.23 MiB (8 segments) vs 3.23 MiB (64 segments)
+...../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+.........qwen3_5: kernels vs reference max rel grad diff 1.535e-06
+.
+tests/test_data.py ..........
+tests/test_lr_schedule.py ....
+tests/test_memory_init.py .....
+tests/test_memory_original.py ............
+tests/test_pretrained.py Loading weights:   0%|          | 0/242 [00:00<?, ?it/s]Loading weights: 100%|██████████| 242/242 [00:00<00:00, 2422.31it/s]
+Loading weights:   0%|          | 0/242 [00:00<?, ?it/s]Loading weights: 100%|██████████| 242/242 [00:00<00:00, 12513.06it/s]
+state-spaces/mamba-130m-hf: control |base generate - base forward| rel 3.73e-05
+state-spaces/mamba-130m-hf vertical=False: |ARMT@init - base| rel 9.28e-05 (control 3.73e-05), |delta CE| 9.5e-07, argmax agree 1.0000
+state-spaces/mamba-130m-hf vertical=True: |ARMT@init - base| rel 9.28e-05 (control 3.73e-05), |delta CE| 9.5e-07, argmax agree 1.0000
+.state-spaces/mamba-130m-hf: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 2.24e-06 (control 3.73e-05), argmax agree 1.0000
+.Loading weights:   0%|          | 0/218 [00:00<?, ?it/s]Loading weights: 100%|██████████| 218/218 [00:00<00:00, 4270.09it/s]
+Loading weights:   0%|          | 0/218 [00:00<?, ?it/s]Loading weights: 100%|██████████| 218/218 [00:00<00:00, 13000.23it/s]
+AntonV/mamba2-130m-hf: control |base generate - base forward| rel 5.29e-06
+AntonV/mamba2-130m-hf vertical=False: |ARMT@init - base| rel 2.64e-05 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+AntonV/mamba2-130m-hf vertical=True: |ARMT@init - base| rel 2.64e-05 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.AntonV/mamba2-130m-hf: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 1.07e-05 (control 1.00e-05), argmax agree 1.0000
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:   0%|          | 1/399 [00:00<01:42,  3.87it/s]Loading weights:  23%|██▎       | 91/399 [00:00<00:00, 315.88it/s]Loading weights:  52%|█████▏    | 208/399 [00:00<00:00, 599.63it/s]Loading weights:  82%|████████▏ | 327/399 [00:00<00:00, 755.63it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 623.72it/s]
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 9264.07it/s]
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py:1044: RuntimeWarning: ChunkDeltaRuleFunction does not support float32 on some platforms. Please use bfloat16/float16.
+            If you want to use float32, please solve the issue by yourself.
+  return fn(*args, **kwargs)
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py:1044: RuntimeWarning: ChunkDeltaRuleFunction does not support float32 on some platforms. Please use bfloat16/float16.
+            If you want to use float32, please solve the issue by yourself.
+  return fn(*args, **kwargs)
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py:1044: RuntimeWarning: ChunkDeltaRuleFunction does not support float32 on some platforms. Please use bfloat16/float16.
+            If you want to use float32, please solve the issue by yourself.
+  return fn(*args, **kwargs)
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py:1044: RuntimeWarning: ChunkDeltaRuleFunction does not support float32 on some platforms. Please use bfloat16/float16.
+            If you want to use float32, please solve the issue by yourself.
+  return fn(*args, **kwargs)
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py:1044: RuntimeWarning: ChunkDeltaRuleFunction does not support float32 on some platforms. Please use bfloat16/float16.
+            If you want to use float32, please solve the issue by yourself.
+  return fn(*args, **kwargs)
+/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py:1044: RuntimeWarning: ChunkDeltaRuleFunction does not support float32 on some platforms. Please use bfloat16/float16.
+            If you want to use float32, please solve the issue by yourself.
+  return fn(*args, **kwargs)
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 1.71e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.58e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.58e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.10e-06 (control 1.00e-05), argmax agree 1.0000
+.Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14413.69it/s]
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14816.29it/s]
+checkpoints/gdn2-370m-30B: control |base generate - base forward| rel 1.60e-04
+checkpoints/gdn2-370m-30B vertical=False: |ARMT@init - base| rel 4.27e-05 (control 1.60e-04), |delta CE| 9.5e-07, argmax agree 1.0000
+checkpoints/gdn2-370m-30B vertical=True: |ARMT@init - base| rel 4.27e-05 (control 1.60e-04), |delta CE| 9.5e-07, argmax agree 1.0000
+.checkpoints/gdn2-370m-30B: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 2.06e-04 (control 1.60e-04), argmax agree 1.0000
+.Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:01<06:33,  1.23s/it]Loading weights:  25%|██▌       | 81/320 [00:01<00:02, 82.05it/s]Loading weights:  38%|███▊      | 121/320 [00:01<00:01, 103.44it/s]Loading weights:  47%|████▋     | 150/320 [00:01<00:01, 123.52it/s]Loading weights:  55%|█████▌    | 177/320 [00:01<00:01, 136.08it/s]Loading weights:  63%|██████▎   | 201/320 [00:02<00:00, 139.29it/s]Loading weights:  70%|███████   | 224/320 [00:02<00:00, 137.48it/s]Loading weights:  79%|███████▉  | 253/320 [00:02<00:00, 159.75it/s]Loading weights:  86%|████████▌ | 274/320 [00:02<00:00, 164.29it/s]Loading weights:  92%|█████████▏| 294/320 [00:02<00:00, 166.82it/s]Loading weights:  98%|█████████▊| 315/320 [00:02<00:00, 175.85it/s]Loading weights: 100%|██████████| 320/320 [00:02<00:00, 119.41it/s]
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:  52%|█████▏    | 167/320 [00:00<00:00, 1655.97it/s]Loading weights: 100%|██████████| 320/320 [00:00<00:00, 1732.71it/s]
+Qwen/Qwen3.5-0.8B-Base: control |base generate - base forward| rel 3.87e-04
+Qwen/Qwen3.5-0.8B-Base vertical=False: |ARMT@init - base| rel 2.20e-05 (control 3.87e-04), |delta CE| 1.9e-06, argmax agree 1.0000
+Qwen/Qwen3.5-0.8B-Base vertical=True: |ARMT@init - base| rel 2.66e-05 (control 3.87e-04), |delta CE| 1.9e-06, argmax agree 1.0000
+.Qwen/Qwen3.5-0.8B-Base: |H - V| = 3.852e-04 (bitwise False), |gen - fwd| rel 3.46e-04 (control 3.87e-04), argmax agree 1.0000
+.
+tests/test_state_tracking.py ......a5 (|G| = 60), 0.53M parameters (0.050M of them ARMT)
+step=3 loss=4.167 acc=0.01667 train_len=5 lr=0.001 grad_norm=4.399 sec_per_step=49.09 w_mv_rms=0.001545
+curriculum: length 8 from step 4
+step=6 loss=4.164 acc=0.01042 train_len=8 lr=0.001 grad_norm=3.314 sec_per_step=0.04032 w_mv_rms=0.00242
+curriculum: length 12 from step 7
+eval eval/loss_L8=4.1109 eval/acc_L8=0.0208 eval/acc_last_L8=0.0000 eval/loss_L20=4.1492 eval/acc_L20=0.0167 eval/acc_last_L20=0.0000 eval/reset/loss_L8=4.1138 eval/reset/acc_L8=0.0208 eval/reset/acc_last_L8=0.0000 eval/reset/loss_L20=4.1504 eval/reset/acc_L20=0.0167 eval/reset/acc_last_L20=0.0000
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 320.79it/s]
+.a5 (|G| = 60), 0.48M parameters (0.000M of them ARMT)
+step=3 loss=4.121 acc=0.02604 train_len=16 lr=0.001 grad_norm=2.509 sec_per_step=0.4333
+step=6 loss=4.132 acc=0.005208 train_len=16 lr=0.0001464 grad_norm=2.326 sec_per_step=0.0128
+eval eval/loss_L8=4.1320 eval/acc_L8=0.0000 eval/acc_last_L8=0.0000 eval/loss_L20=4.1387 eval/acc_L20=0.0250 eval/acc_last_L20=0.0000
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 374.73it/s]
+.a5 (|G| = 60), 0.53M parameters (0.050M of them ARMT)
+.
+tests/test_training.py mamba ckpt=False: loss 4.817 -> 0.345
+.mamba2 ckpt=False: loss 4.813 -> 0.010
+.qwen3_5 ckpt=False: loss 4.597 -> 0.033
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 ckpt=False: loss 4.734 -> 0.001
+.gated_deltanet ckpt=False: loss 4.609 -> 0.003
+.gdn2 ckpt=False: loss 4.581 -> 0.003
+.mamba ckpt=True: loss 4.817 -> 0.322
+.mamba2 ckpt=True: loss 4.813 -> 0.010
+.qwen3_5 ckpt=True: loss 4.597 -> 0.033
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7 ckpt=True: loss 4.734 -> 0.001
+.gated_deltanet ckpt=True: loss 4.609 -> 0.003
+.gdn2 ckpt=True: loss 4.581 -> 0.003
+..../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+....../home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+...mamba: bf16 loss 4.712915 vs 4.712915, max rel grad diff 0.00e+00
+.mamba2: bf16 loss 4.933319 vs 4.933319, max rel grad diff 0.00e+00
+.qwen3_5: bf16 loss 4.595573 vs 4.595573, max rel grad diff 0.00e+00
+./home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/layers/rwkv7.py:151: UserWarning: According to Bo, you are using a potentially buggy FLA implementation of RWKV. If you plan to report any numbers based on this implementation, we strongly recommend cross-checking with the official repo: https://github.com/BlinkDL/RWKV-LM. Bo may disagree with results reported from this version.
+  warnings.warn(
+rwkv7: bf16 loss 4.641767 vs 4.641767, max rel grad diff 0.00e+00
+.gated_deltanet: bf16 loss 4.631601 vs 4.631601, max rel grad diff 0.00e+00
+.gdn2: bf16 loss 4.604366 vs 4.604366, max rel grad diff 0.00e+00
+.
+
+==================================== PASSES ====================================
+___________________ test_init_equals_base_model[False-rwkv7] ___________________
+------------------------------ Captured log call -------------------------------
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952
+______________ test_generation_matches_forward[False-False-rwkv7] ______________
+------------------------------ Captured log call -------------------------------
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952
+__________ test_gradients_flow_through_state_and_memory[False-rwkv7] ___________
+------------------------------ Captured log call -------------------------------
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:structured.py:28 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952
+______________________ test_chunked_loss_is_exact[rwkv7] _______________________
+------------------------------ Captured log call -------------------------------
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952
+________________ test_state_dropout_same_in_both_orders[rwkv7] _________________
+------------------------------ Captured log call -------------------------------
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+WARNING  torch._dynamo.convert_frame:convert_frame.py:1358 torch._dynamo hit config.recompile_limit (8)
+   function: 'sqrelu_fwd' (/home/ivan.rodkin/miniconda3/envs/recurrent_armt/lib/python3.11/site-packages/fla/modules/activations/ops.py:504)
+   last reason: 0/7: GLOBAL_STATE changed: autocast 
+To log all recompilation reasons, use TORCH_LOGS="recompiles".
+To diagnose recompilation issues, see https://pytorch.org/docs/main/torch.compiler_troubleshooting.html
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952
+__________________ test_overfits_a_batch_in_bf16[False-rwkv7] __________________
+------------------------------ Captured log call -------------------------------
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:4185 
+DEBUG    torch.__trace:convert_frame.py:249 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:meta_utils.py:270 
+DEBUG    torch.__trace:meta_utils.py:488 
+DEBUG    torch.__trace:meta_utils.py:1902 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:5125 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:output_graph.py:1989 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2337 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:compile_fx.py:2368 
+DEBUG    torch.__trace:autograd_cache.py:822 
+DEBUG    torch.__trace:autograd_cache.py:846 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:codecache.py:1234 
+DEBUG    torch.__trace:codecache.py:1242 
+DEBUG    torch.__trace:codecache.py:1246 
+DEBUG    torch.__trace:codecache.py:1251 
+DEBUG    torch.__trace:codecache.py:1259 
+DEBUG    torch.__trace:autograd_cache.py:621 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:symbolic_shapes.py:7184 
+DEBUG    torch.__trace:utils.py:1991 
+DEBUG    torch.__trace:autograd_cache.py:1254 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:guards.py:3466 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1952 
+DEBUG    torch.__trace:utils.py:1647 
+DEBUG    torch.__trace:utils.py:1952
+=========================== short test summary info ============================
+PASSED tests/test_armt.py::test_init_equals_base_model[False-mamba]
+PASSED tests/test_armt.py::test_init_equals_base_model[False-mamba2]
+PASSED tests/test_armt.py::test_init_equals_base_model[False-qwen3_5]
+PASSED tests/test_armt.py::test_init_equals_base_model[False-rwkv7]
+PASSED tests/test_armt.py::test_init_equals_base_model[False-gated_deltanet]
+PASSED tests/test_armt.py::test_init_equals_base_model[False-gdn2]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-mamba]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-mamba2]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-qwen3_5]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-rwkv7]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-gated_deltanet]
+PASSED tests/test_armt.py::test_init_equals_base_model[True-gdn2]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-mamba]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-mamba2]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-qwen3_5]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-rwkv7]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-gated_deltanet]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[False-gdn2]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-mamba]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-mamba2]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-qwen3_5]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-rwkv7]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-gated_deltanet]
+PASSED tests/test_armt.py::test_vertical_equals_horizontal[True-gdn2]
+PASSED tests/test_armt.py::test_memory_changes_outputs[mamba]
+PASSED tests/test_armt.py::test_memory_changes_outputs[mamba2]
+PASSED tests/test_armt.py::test_memory_changes_outputs[qwen3_5]
+PASSED tests/test_armt.py::test_memory_changes_outputs[rwkv7]
+PASSED tests/test_armt.py::test_memory_changes_outputs[gated_deltanet]
+PASSED tests/test_armt.py::test_memory_changes_outputs[gdn2]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-mamba]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-mamba2]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-rwkv7]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-gated_deltanet]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-False-gdn2]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-mamba]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-mamba2]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-rwkv7]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-gated_deltanet]
+PASSED tests/test_armt.py::test_generation_matches_forward[False-True-gdn2]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-mamba]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-mamba2]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-rwkv7]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-gated_deltanet]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-False-gdn2]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-mamba]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-mamba2]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-qwen3_5]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-rwkv7]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-gated_deltanet]
+PASSED tests/test_armt.py::test_generation_matches_forward[True-True-gdn2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-mamba]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-mamba2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-rwkv7]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-gated_deltanet]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts0-gdn2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-mamba]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-mamba2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-rwkv7]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-gated_deltanet]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts1-gdn2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-mamba]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-mamba2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-rwkv7]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-gated_deltanet]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts2-gdn2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-mamba]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-mamba2]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-qwen3_5]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-rwkv7]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-gated_deltanet]
+PASSED tests/test_armt.py::test_pieces_equal_whole[cuts3-gdn2]
+PASSED tests/test_armt.py::test_state_size_constant[False-mamba]
+PASSED tests/test_armt.py::test_state_size_constant[False-mamba2]
+PASSED tests/test_armt.py::test_state_size_constant[False-rwkv7]
+PASSED tests/test_armt.py::test_state_size_constant[False-gated_deltanet]
+PASSED tests/test_armt.py::test_state_size_constant[False-gdn2]
+PASSED tests/test_armt.py::test_state_size_constant[True-mamba]
+PASSED tests/test_armt.py::test_state_size_constant[True-mamba2]
+PASSED tests/test_armt.py::test_state_size_constant[True-rwkv7]
+PASSED tests/test_armt.py::test_state_size_constant[True-gated_deltanet]
+PASSED tests/test_armt.py::test_state_size_constant[True-gdn2]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-mamba]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-mamba2]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-qwen3_5]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-rwkv7]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-gated_deltanet]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[False-gdn2]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-mamba]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-mamba2]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-qwen3_5]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-rwkv7]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-gated_deltanet]
+PASSED tests/test_armt.py::test_gradients_flow_through_state_and_memory[True-gdn2]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[mamba]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[mamba2]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[qwen3_5]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[rwkv7]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[gated_deltanet]
+PASSED tests/test_armt.py::test_all_parameters_get_gradients[gdn2]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[mamba]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[mamba2]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[qwen3_5]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[rwkv7]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[gated_deltanet]
+PASSED tests/test_armt.py::test_streamed_gradients_equal_whole[gdn2]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-mamba]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-mamba2]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-qwen3_5]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-rwkv7]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-gated_deltanet]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[False-gdn2]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-mamba]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-mamba2]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-qwen3_5]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-rwkv7]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-gated_deltanet]
+PASSED tests/test_armt.py::test_gradient_checkpointing_is_exact[True-gdn2]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[mamba]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[mamba2]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[qwen3_5]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[rwkv7]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[gated_deltanet]
+PASSED tests/test_armt.py::test_vertical_horizontal_gradients[gdn2]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[mamba]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[mamba2]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[qwen3_5]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[rwkv7]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[gated_deltanet]
+PASSED tests/test_armt.py::test_chunked_loss_is_exact[gdn2]
+PASSED tests/test_armt.py::test_kernels_match_reference_scans[mamba]
+PASSED tests/test_armt.py::test_kernels_match_reference_scans[mamba2]
+PASSED tests/test_armt.py::test_save_load_roundtrip[mamba]
+PASSED tests/test_armt.py::test_save_load_roundtrip[mamba2]
+PASSED tests/test_armt.py::test_save_load_roundtrip[qwen3_5]
+PASSED tests/test_armt.py::test_save_load_roundtrip[rwkv7]
+PASSED tests/test_armt.py::test_save_load_roundtrip[gated_deltanet]
+PASSED tests/test_armt.py::test_save_load_roundtrip[gdn2]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[mamba]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[mamba2]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[qwen3_5]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[rwkv7]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[gated_deltanet]
+PASSED tests/test_armt.py::test_state_dropout_same_in_both_orders[gdn2]
+PASSED tests/test_armt.py::test_state_reset_is_a_fresh_start_per_segment[mamba]
+PASSED tests/test_armt.py::test_state_reset_is_a_fresh_start_per_segment[mamba2]
+PASSED tests/test_armt.py::test_state_reset_is_a_fresh_start_per_segment[rwkv7]
+PASSED tests/test_armt.py::test_state_reset_is_a_fresh_start_per_segment[gated_deltanet]
+PASSED tests/test_armt.py::test_state_reset_is_a_fresh_start_per_segment[gdn2]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[mamba]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[mamba2]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[qwen3_5]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[rwkv7]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[gated_deltanet]
+PASSED tests/test_armt.py::test_state_reset_leaves_only_the_memory_path[gdn2]
+PASSED tests/test_armt.py::test_unwrapped_layers[mamba]
+PASSED tests/test_armt.py::test_unwrapped_layers[mamba2]
+PASSED tests/test_armt.py::test_unwrapped_layers[qwen3_5]
+PASSED tests/test_armt.py::test_unwrapped_layers[rwkv7]
+PASSED tests/test_armt.py::test_unwrapped_layers[gated_deltanet]
+PASSED tests/test_armt.py::test_unwrapped_layers[gdn2]
+PASSED tests/test_armt.py::test_last_position_logits[False-mamba]
+PASSED tests/test_armt.py::test_last_position_logits[False-mamba2]
+PASSED tests/test_armt.py::test_last_position_logits[False-qwen3_5]
+PASSED tests/test_armt.py::test_last_position_logits[False-rwkv7]
+PASSED tests/test_armt.py::test_last_position_logits[False-gated_deltanet]
+PASSED tests/test_armt.py::test_last_position_logits[False-gdn2]
+PASSED tests/test_armt.py::test_last_position_logits[True-mamba]
+PASSED tests/test_armt.py::test_last_position_logits[True-mamba2]
+PASSED tests/test_armt.py::test_last_position_logits[True-qwen3_5]
+PASSED tests/test_armt.py::test_last_position_logits[True-rwkv7]
+PASSED tests/test_armt.py::test_last_position_logits[True-gated_deltanet]
+PASSED tests/test_armt.py::test_last_position_logits[True-gdn2]
+PASSED tests/test_armt.py::test_last_position_logits_memory_does_not_grow[mamba]
+PASSED tests/test_armt.py::test_last_position_logits_memory_does_not_grow[mamba2]
+PASSED tests/test_armt.py::test_last_position_logits_memory_does_not_grow[rwkv7]
+PASSED tests/test_armt.py::test_last_position_logits_memory_does_not_grow[gated_deltanet]
+PASSED tests/test_armt.py::test_last_position_logits_memory_does_not_grow[gdn2]
+PASSED tests/test_armt.py::test_generate_stops_per_sample_at_eos
+PASSED tests/test_armt.py::test_memory_stats[mamba]
+PASSED tests/test_armt.py::test_memory_stats[mamba2]
+PASSED tests/test_armt.py::test_memory_stats[qwen3_5]
+PASSED tests/test_armt.py::test_memory_stats[rwkv7]
+PASSED tests/test_armt.py::test_memory_stats[gated_deltanet]
+PASSED tests/test_armt.py::test_memory_stats[gdn2]
+PASSED tests/test_armt.py::test_attention_models_are_rejected
+PASSED tests/test_armt.py::test_attention_cache_is_rejected_at_runtime
+PASSED tests/test_armt.py::test_hybrid_memory_only_on_recurrent_layers[qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_state_size[False-qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_state_size[True-qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_state_reset_keeps_attention[qwen3_5]
+PASSED tests/test_armt.py::test_hybrid_kernels_match_reference[qwen3_5]
+PASSED tests/test_data.py::test_pack
+PASSED tests/test_data.py::test_constrained_order_cooldown
+PASSED tests/test_data.py::test_stream_deterministic_and_cooldown_across_chunks
+PASSED tests/test_data.py::test_ranks_are_disjoint
+PASSED tests/test_data.py::test_resume_is_exact
+PASSED tests/test_data.py::test_fineweb_only_mix_is_the_fineweb_stream
+PASSED tests/test_data.py::test_mix_chunks_take_units_of_every_source
+PASSED tests/test_data.py::test_mix_min_doc_tokens_and_holdout
+PASSED tests/test_data.py::test_mix_ranks_disjoint_and_resume
+PASSED tests/test_data.py::test_peek_returns_the_first_windows_without_taking_them
+PASSED tests/test_lr_schedule.py::test_frozen_group_is_zero_then_warms_up
+PASSED tests/test_lr_schedule.py::test_default_joins_the_decayed_run_schedule
+PASSED tests/test_lr_schedule.py::test_restart_reaches_full_lr_and_decays_to_the_floor
+PASSED tests/test_lr_schedule.py::test_restart_changes_nothing_for_a_group_trained_from_the_start
+PASSED tests/test_memory_init.py::test_last_conv_tap_multiplies_the_current_token
+PASSED tests/test_memory_init.py::test_slowest_head_is_the_smallest_A_log
+PASSED tests/test_memory_init.py::test_qk_init_copies_the_head_and_keeps_the_base_model
+PASSED tests/test_memory_init.py::test_qkvb_init_calibrates_gate_and_values
+PASSED tests/test_memory_init.py::test_wrong_sizes_and_backbones_are_rejected
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-True-False-1]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-True-False-4]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-True-True-1]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-True-True-4]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-False-False-1]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-False-False-4]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-False-True-1]
+PASSED tests/test_memory_original.py::test_memory_matches_original[True-False-True-4]
+PASSED tests/test_memory_original.py::test_memory_matches_original[False-False-False-1]
+PASSED tests/test_memory_original.py::test_memory_matches_original[False-False-False-4]
+PASSED tests/test_memory_original.py::test_memory_matches_original[False-False-True-1]
+PASSED tests/test_memory_original.py::test_memory_matches_original[False-False-True-4]
+PASSED tests/test_pretrained.py::test_init_equals_base[state-spaces/mamba-130m-hf]
+PASSED tests/test_pretrained.py::test_active_memory_equivalences[state-spaces/mamba-130m-hf]
+PASSED tests/test_pretrained.py::test_init_equals_base[AntonV/mamba2-130m-hf]
+PASSED tests/test_pretrained.py::test_active_memory_equivalences[AntonV/mamba2-130m-hf]
+PASSED tests/test_pretrained.py::test_init_equals_base[fla-hub/rwkv7-191M-world]
+PASSED tests/test_pretrained.py::test_active_memory_equivalences[fla-hub/rwkv7-191M-world]
+PASSED tests/test_pretrained.py::test_init_equals_base[checkpoints/gdn2-370m-30B]
+PASSED tests/test_pretrained.py::test_active_memory_equivalences[checkpoints/gdn2-370m-30B]
+PASSED tests/test_pretrained.py::test_init_equals_base[Qwen/Qwen3.5-0.8B-Base]
+PASSED tests/test_pretrained.py::test_active_memory_equivalences[Qwen/Qwen3.5-0.8B-Base]
+PASSED tests/test_state_tracking.py::test_group_axioms[parity-2]
+PASSED tests/test_state_tracking.py::test_group_axioms[z60-60]
+PASSED tests/test_state_tracking.py::test_group_axioms[a5-60]
+PASSED tests/test_state_tracking.py::test_group_axioms[s5-120]
+PASSED tests/test_state_tracking.py::test_a5_is_not_abelian_and_parity_is_xor
+PASSED tests/test_state_tracking.py::test_products_match_a_fold
+PASSED tests/test_state_tracking.py::test_training_script_runs[extra0]
+PASSED tests/test_state_tracking.py::test_training_script_runs[extra1]
+PASSED tests/test_state_tracking.py::test_memory_arm_must_start_longer_than_a_segment
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-mamba]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-mamba2]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-qwen3_5]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-rwkv7]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-gated_deltanet]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[False-gdn2]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-mamba]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-mamba2]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-qwen3_5]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-rwkv7]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-gated_deltanet]
+PASSED tests/test_training.py::test_overfits_a_batch_in_bf16[True-gdn2]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-mamba]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-mamba2]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-qwen3_5]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-rwkv7]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-gated_deltanet]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[False-gdn2]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-mamba]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-mamba2]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-qwen3_5]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-rwkv7]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-gated_deltanet]
+PASSED tests/test_training.py::test_every_parameter_gets_gradients_under_autocast[True-gdn2]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[mamba]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[mamba2]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[qwen3_5]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[rwkv7]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[gated_deltanet]
+PASSED tests/test_training.py::test_checkpointing_same_grads_under_autocast[gdn2]
+SKIPPED [2] tests/test_armt.py:119: the KV caches of the attention layers grow: test_hybrid_state_size
+SKIPPED [1] tests/test_armt.py:316: the attention layers keep their KV caches: test_hybrid_state_reset_keeps_attention
+SKIPPED [1] tests/test_armt.py:383: the KV caches of the attention layers grow
+================= 278 passed, 4 skipped in 2489.03s (0:41:29) ==================
