@@ -1,0 +1,82 @@
+# tests/test_pretrained.py after 7b4838b (IEEE fp32, RWKV-7 default chunk scheme, seeded memory init), mbz_nlp RTX 6000 Ada, GPU 1: the whole module once, then the RWKV-7 tests 10 times in fresh processes
+state-spaces/mamba-130m-hf: control |base generate - base forward| rel 3.81e-05
+state-spaces/mamba-130m-hf vertical=False: |ARMT@init - base| rel 9.83e-05 (control 3.81e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+state-spaces/mamba-130m-hf vertical=True: |ARMT@init - base| rel 9.83e-05 (control 3.81e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.state-spaces/mamba-130m-hf: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 4.69e-06 (control 3.81e-05), argmax agree 1.0000
+AntonV/mamba2-130m-hf: control |base generate - base forward| rel 7.23e-06
+AntonV/mamba2-130m-hf vertical=False: |ARMT@init - base| rel 2.64e-05 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+AntonV/mamba2-130m-hf vertical=True: |ARMT@init - base| rel 2.64e-05 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.AntonV/mamba2-130m-hf: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 8.82e-06 (control 1.00e-05), argmax agree 1.0000
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+checkpoints/gdn2-370m-30B: control |base generate - base forward| rel 1.62e-04
+checkpoints/gdn2-370m-30B vertical=False: |ARMT@init - base| rel 4.28e-05 (control 1.62e-04), |delta CE| 0.0e+00, argmax agree 1.0000
+checkpoints/gdn2-370m-30B vertical=True: |ARMT@init - base| rel 4.28e-05 (control 1.62e-04), |delta CE| 0.0e+00, argmax agree 1.0000
+.checkpoints/gdn2-370m-30B: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 2.59e-04 (control 1.62e-04), argmax agree 1.0000
+Qwen/Qwen3.5-0.8B-Base: control |base generate - base forward| rel 3.87e-04
+Qwen/Qwen3.5-0.8B-Base vertical=False: |ARMT@init - base| rel 3.15e-05 (control 3.87e-04), |delta CE| 0.0e+00, argmax agree 1.0000
+Qwen/Qwen3.5-0.8B-Base vertical=True: |ARMT@init - base| rel 3.26e-05 (control 3.87e-04), |delta CE| 0.0e+00, argmax agree 1.0000
+.Qwen/Qwen3.5-0.8B-Base: |H - V| = 5.426e-04 (bitwise False), |gen - fwd| rel 3.48e-04 (control 3.87e-04), argmax agree 1.0000
+10 passed, 4 warnings in 361.65s (0:06:01)
+== run 1
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 12.24s
+== run 2
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.69s
+== run 3
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.66s
+== run 4
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.69s
+== run 5
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.80s
+== run 6
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.72s
+== run 7
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.70s
+== run 8
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.70s
+== run 9
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.71s
+== run 10
+fla-hub/rwkv7-191M-world: control |base generate - base forward| rel 2.13e-06
+fla-hub/rwkv7-191M-world vertical=False: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+fla-hub/rwkv7-191M-world vertical=True: |ARMT@init - base| rel 1.80e-06 (control 1.00e-05), |delta CE| 0.0e+00, argmax agree 1.0000
+.fla-hub/rwkv7-191M-world: |H - V| = 0.000e+00 (bitwise True), |gen - fwd| rel 3.29e-06 (control 1.00e-05), argmax agree 1.0000
+2 passed, 8 deselected, 4 warnings in 11.91s
