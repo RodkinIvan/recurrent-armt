@@ -81,9 +81,14 @@ After a change none of these can see (e.g. a raw NCCL write into the parameters)
 
 The candidates run in rounds of single calls, in a random order each round, and the median counts: the GPU mostly runs
 at its power cap, where the clock drifts. Short best-of-N timings picked kernels up to 20% slower than the best for the
-weight-gradient GEMMs. The search takes about 25 s for the 370M model's shapes, once; it prints one line when it starts.
+weight-gradient GEMMs. Back-to-back rounds drive the GPU deeper into its power cap than a real step does: on an RTX 5880
+Ada a GEMM loop settles near 1.1 GHz, a training step runs at ~1.45 GHz, and forward-only work higher still, and kernels
+rank differently there. So the large shapes' leading candidates are also timed in bursts (the GPU idles 40 ms before each
+call), and the kernel with the best sum of the two times, each relative to its regime's best, is kept. Against the
+cap-only choice this made the 370M model's training step 6.6% faster and its inference forward 8% faster. The search
+takes about a minute for the 370M model's shapes, once; it prints one line when it starts.
 
-The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>_t2.txt` under a file lock, so DDP ranks
+The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>_t3.txt` under a file lock, so DDP ranks
 and later runs read them instead of tuning again, and so compute with the same kernels. When two processes tune the same
 shape at once, the first one written wins and both use it. The lock is never held while the GPU works.
 - The choices are kept for good. Shapes first seen in a backward are timed while other work (e.g. DDP's all-reduce)

@@ -262,6 +262,26 @@ int main(int argc, char** argv) {
             }
         }
         cudaGetLastError();
+        // burst timing (GS_BURST=1): the GPU idles 40 ms before each timed call, so it runs at its boost clock rather
+        // than at its power cap (a forward-only workload, short jobs); median of rounds in random order
+        std::vector<float> burst(cands.size(), 0.f);
+        if (getenv("GS_BURST")) {
+            int nc = (int)cands.size();
+            std::vector<std::vector<float>> tb(nc);
+            std::vector<int> order(nc);
+            for (int i = 0; i < nc; i++) order[i] = i;
+            uint64_t rs2 = 777;
+            for (int r = 0; r < 7; r++) {
+                for (int i = nc - 1; i > 0; i--) { rs2 = rs2 * 6364136223846793005ull + 1442695040888963407ull; std::swap(order[i], order[(rs2 >> 33) % (i + 1)]); }
+                for (int i : order) {
+                    CK(cudaStreamSynchronize(st));
+                    usleep(40000);
+                    CK(cudaEventRecord(e0, st)); cands[i].f(); CK(cudaEventRecord(e1, st)); CK(cudaEventSynchronize(e1));
+                    float ms; CK(cudaEventElapsedTime(&ms, e0, e1)); tb[i].push_back(ms);
+                }
+            }
+            for (int i = 0; i < nc; i++) { std::sort(tb[i].begin(), tb[i].end()); burst[i] = tb[i][tb[i].size() / 2]; }
+        }
         double flop = 2.0 * s.M * s.N * s.K;
         printf("== %s: M=%d N=%d K=%d, C %s %d-byte aligned; %d heuristic candidates (lib rule: %d)\n", s.name, s.M, s.N, s.K,
                s.f32out ? "fp32" : "bf16", alC, n, n2);
@@ -273,7 +293,9 @@ int main(int argc, char** argv) {
             bool key = i < 2;
             if (!key && shown >= 8) continue;
             if (!key) shown++;
-            printf("  %8.3f ms %6.1f TFLOPS  %s\n", cands[i].best, flop / cands[i].best / 1e9, cands[i].nm.c_str());
+            if (getenv("GS_BURST"))
+                printf("  %8.3f ms %6.1f TFLOPS  burst %7.3f ms  %s\n", cands[i].best, flop / cands[i].best / 1e9, burst[i], cands[i].nm.c_str());
+            else printf("  %8.3f ms %6.1f TFLOPS  %s\n", cands[i].best, flop / cands[i].best / 1e9, cands[i].nm.c_str());
         }
         cublasLtMatmulPreferenceDestroy(pref); cublasLtMatmulPreferenceDestroy(pref2);
     }

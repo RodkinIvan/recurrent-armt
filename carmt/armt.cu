@@ -365,10 +365,10 @@ static float* GPG(Ctx* c, int i0, int i1) {
 // large shapes, the fastest few of an exhaustive search over cuBLASLt's configurations (algorithm x tile x stages x CTA
 // swizzle x custom option, then split-k x reduction scheme for the best of those). The candidates are timed in rounds of
 // single calls, in a fresh random order every round (the GPU mostly runs at its power cap, and its clock drifts), and a
-// candidate's median counts. The choice must not depend on timing noise (bf16 results differ slightly between algorithms,
+// candidate's median counts; large shapes are also timed in bursts below the cap (see tune_gemm). The choice must not depend on timing noise (bf16 results differ slightly between algorithms,
 // and DDP ranks / repeated runs should compute the same thing), so it is made once per GPU model and cuBLAS version and
 // persisted: ARMT_GEMM_CACHE=<path prefix> (the Python side sets it next to the library) stores every choice in
-// <prefix>_<gpu>_<cublasLt version>_t2.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
+// <prefix>_<gpu>_<cublasLt version>_t3.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
 // read the first process's choice instead of tuning again. Plans are shared by every context of the process.
 // ARMT_GEMM_TUNE=0: always cublasGemmEx; 1: no exhaustive search; 2 (default): as above.
 // ARMT_GEMM_LOG=1: print each tuned shape's default and chosen time.
@@ -401,7 +401,7 @@ static void gemm_tune_init() {
         if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&pr, dev) == cudaSuccess) {
             std::string name = pr.name;
             for (char& ch : name) if (!isalnum((unsigned char)ch)) ch = '_';
-            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t2.txt";
+            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t3.txt";
         }
     }
 }
@@ -645,14 +645,52 @@ static GemmChoice tune_gemm(Ctx* c, GemmPlan* p, cublasOperation_t oa, cublasOpe
     int best = 0;
     for (int i : ord)
         if (i && med[i] < med[best] * (best ? 1.f : 0.99f)) best = i;   // keep the default unless a candidate is faster by 1%
+    // The rounds above run the GPU into its power cap (a sustained GEMM loop settles near 1.1 GHz on an RTX 5880 Ada),
+    // but in a training step GEMMs alternate with memory-bound kernels and run at a higher clock (~1.45 GHz), and in
+    // forward-only work higher still; kernels rank differently there (a tile 5% slower at the cap can be 15% faster at
+    // the boost clock). So for large shapes the candidates within 10% of the best are also timed in bursts (the GPU idles
+    // 40 ms before each timed call), and the one with the best sum of the two times, each relative to its regime's best,
+    // is kept. (Measured on the 370M model: training -6.6%, inference -8% against the cap-only choice.)
+    float bmed_best = 0.f;
+    if (g_tune >= 2 && flop >= LT_EXH_FLOP) {
+        std::vector<int> top;
+        for (int i : ord) if (med[i] <= 1.10f * med[best]) top.push_back(i);
+        std::sort(top.begin(), top.end(), [&](int a, int b) { return med[a] < med[b]; });
+        if (top.size() > 8) top.resize(8);
+        if (top.size() > 1) {
+            std::vector<std::vector<float>> tb(nc);
+            for (int r = 0; r < 5; r++) {
+                shuffle(top);
+                for (int i : top) {
+                    CK(cudaStreamSynchronize(c->stream));
+                    usleep(40000);
+                    CK(cudaEventRecord(eb[i], c->stream)); run(i ? &v[i - 1] : NULL); CK(cudaEventRecord(ee[i], c->stream));
+                    CK(cudaEventSynchronize(ee[i]));
+                    float ms = 0.f;
+                    CK(cudaEventElapsedTime(&ms, eb[i], ee[i]));
+                    tb[i].push_back(ms);
+                }
+            }
+            cudaGetLastError();
+            std::vector<float> bm(nc, 1e30f);
+            float mc = 1e30f, mb = 1e30f;
+            for (int i : top) { std::sort(tb[i].begin(), tb[i].end()); bm[i] = tb[i][tb[i].size() / 2]; mc = std::min(mc, med[i]); mb = std::min(mb, bm[i]); }
+            float sbest = 1e30f;
+            int b2 = best;
+            for (int i : top) { float sc = med[i] / mc + bm[i] / mb; if (sc < sbest) { sbest = sc; b2 = i; } }
+            best = b2;
+            bmed_best = bm[best];
+        }
+    }
     for (int i = 0; i < nc; i++) { cudaEventDestroy(eb[i]); cudaEventDestroy(ee[i]); }
     CK(cudaEventDestroy(e0)); CK(cudaEventDestroy(e1));
     buf_free(&c->buf[B_TUNE]);
     if (best > 0) { ch.lt = 1; ch.algo = v[best - 1].algo; ch.ws = v[best - 1].ws; }
     if (g_tune_log)
-        fprintf(stderr, "armt gemm %c%c M=%d N=%d K=%d batch=%d in=%d/%d out=%d beta=%g align=%d/%d/%d: %d candidates; default %.4f ms, chosen %.4f ms (%s)\n",
+        fprintf(stderr, "armt gemm %c%c M=%d N=%d K=%d batch=%d in=%d/%d out=%d beta=%g align=%d/%d/%d: %d candidates; default %.4f ms, chosen %.4f ms%s (%s)\n",
                 oa == CUBLAS_OP_T ? 'T' : 'N', ob == CUBLAS_OP_T ? 'T' : 'N', M, N, K, batch, (int)ta, (int)tb, (int)tc,
-                beta, alA, alB, alC, nc, med[0], med[best], best ? "lt" : "default");
+                beta, alA, alB, alC, nc, med[0], med[best], bmed_best > 0.f ? (" (burst " + std::to_string(bmed_best) + " ms)").c_str() : "",
+                best ? "lt" : "default");
     return ch;
 }
 
