@@ -136,6 +136,23 @@ int main(int argc, char** argv) {
                 for (long i = 0; i < s.nchB; i++) a += h[i * 8 + k];
                 printf("intra_bwd %-28s %9.0f cycles\n", nb[k], a / s.nchB);
             }
+#ifndef SCAN32
+            CK(cudaMemset(tb, 0, s.nchB * 8 * sizeof(long long)));
+            CK(cudaMemcpyToSymbol(intra_timing_b, &tb, sizeof(tb)));   // (unchanged)
+            long long* tp = NULL;
+            CK(cudaMalloc(&tp, s.nchB * 8 * sizeof(long long)));
+            CK(cudaMemset(tp, 0, s.nchB * 8 * sizeof(long long)));
+            CK(cudaMemcpyToSymbol(post_timing, &tp, sizeof(tp)));
+            one(false, true);
+            CK(cudaStreamSynchronize(st));
+            CK(cudaMemcpy(h.data(), tp, h.size() * sizeof(long long), cudaMemcpyDeviceToHost));
+            const char* np_[6] = {"stage S0", "dglp; dQg, dWm, dM, dwv", "stage dSe", "dKt, dy, dA", "T1", "dL"};
+            for (int k = 0; k < 6; k++) {
+                double a = 0;
+                for (long i = 0; i < s.nchB; i++) a += h[i * 8 + k];
+                printf("post_bwd  %-28s %9.0f cycles\n", np_[k], a / s.nchB);
+            }
+#endif
         }
 #endif
         if (getenv("KBENCH_GEMMS")) {   // each GEMM of the scan's backward on its own (the buffers of the last step)
