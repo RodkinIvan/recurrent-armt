@@ -43,3 +43,5 @@ report, before those changes.
 | `bench_rtx6000_bf16_kernels.json` | `carmt/bench.py`: training / inference / generation, carmt and the original in one run | final |
 | `profile_rtx6000_carmt_train_kernels.log` | `carmt/profile_kernels.py --what train --rows 400`: every kernel of one training step | final |
 | `long_context_rtx6000_kernels.log` | `carmt/long_context.py carmt ... last` and `... loss`, 1M / 4M / 10M tokens (the 1M runs include the one-time GEMM tuning) | final |
+| `tests_rtx5880_kernels.log`, `tests_rtx6000_kernels.log` | `pytest carmt/tests -rA -s` on the final build (after the review fixes): 68 passed on each GPU, with the real-dimension bf16 accuracy lines and the fused-backward-vs-GEMM-path check | final |
+| `dist_check_2x_rtx5880_kernels.log` | `torchrun --nproc_per_node 2 carmt/tests/dist_check.py` on the final build: the fp32 DDP / ZeRO-1 / ZeRO-2 checks pass; the bf16 370M part ran out of memory (other training runs held 35 GB of GPU 0) | final |

@@ -59,3 +59,7 @@ infer B=8: A 797.3 ms  B 732.5 ms  B/A 0.919  (per-round B/A: 0.916 0.917 0.917 
 tests: 65 passed. test_gradients_bf16_real_dimensions (median / 95% of carmt's error over the original's own bf16 error):
 hybrid-qwen35 bf16 scan 0.88 / 1.22, fp32 scan 0.86 / 1.17; final bf16 scan 0.88 / 1.29, fp32 scan 0.87 / 1.14,
 bf16 scan with TF32 on (k_post_bwd) 0.87 / 1.26.
+
+== after the review fixes (records/tests_rtx5880_kernels.log): 68 passed; real-dimension bf16 accuracy median / 95%:
+bf16 scan TF32 off 0.88 / 1.28, TF32 on (k_post_bwd) 0.88 / 1.21; fp32 scan 0.87 / 1.13 and 0.87 / 1.23;
+k_post_bwd / GEMM path per-parameter error ratio (TF32 on): median 0.999, 90% 1.022, max 2.08.

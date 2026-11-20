@@ -71,6 +71,26 @@ class tf32:
         torch.backends.cuda.matmul.allow_tf32 = self.old
 
 
+class scan_bwd_gemms:
+    """ARMT_SCAN_BWD_GEMMS=1 (on) or unset while the block runs: a runner's context created inside takes the scan
+    backward's GEMM path even with TF32 on, instead of the fused k_post_bwd."""
+    def __init__(self, on):
+        self.on = on
+
+    def __enter__(self):
+        self.old = os.environ.get("ARMT_SCAN_BWD_GEMMS")
+        if self.on:
+            os.environ["ARMT_SCAN_BWD_GEMMS"] = "1"
+        else:
+            os.environ.pop("ARMT_SCAN_BWD_GEMMS", None)
+
+    def __exit__(self, *a):
+        if self.old is None:
+            os.environ.pop("ARMT_SCAN_BWD_GEMMS", None)
+        else:
+            os.environ["ARMT_SCAN_BWD_GEMMS"] = self.old
+
+
 CONFIGS = {
     "default": dict(),
     "head128": dict(base=base_config(head_dim=128, heads=2, hidden=256)),
@@ -499,6 +519,55 @@ def test_gradients_bf16_real_dimensions(scan_fp32, tf):
     assert q(.5) <= 1.0 and q(.95) <= 1.5, (q(.5), q(.95))
     for n in gref:
         assert ec[n] < max(10 * eo[n], 5e-2), (n, ec[n], eo[n])
+
+
+@pytest.mark.parametrize("name", ["default", "head128"])
+def test_fused_scan_backward_matches_gemm_path(name):
+    """with TF32 on (train.py's setting) the bf16 build's scan backward runs the fused k_post_bwd; against the exact
+    reference its gradients are as accurate as the GEMM path's (ARMT_SCAN_BWD_GEMMS=1), for head_dim 64 and 128"""
+    m = make(**CONFIGS[name])
+    ids = ids_of(2, 120)
+    with exact_gdn2(), tf32(False):
+        _, gref = _grads(m, lambda: m(input_ids=ids, labels=ids))
+    g = {}
+    for gemm in (True, False):
+        with scan_bwd_gemms(gemm), torch.autocast("cuda", dtype=torch.bfloat16), tf32(True):
+            r = runner(m)
+            _, g[gemm] = _grads(m, lambda: r(input_ids=ids, labels=ids))
+    for n, x in gref.items():
+        if x is None:
+            continue
+        eg, ef = rel(g[True][n], x), rel(g[False][n], x)
+        assert ef < max(1.5 * eg, 2e-2), (n, ef, eg)
+
+
+@pytest.mark.skipif(not os.path.exists(CKPT), reason="no GDN-2 checkpoint (set CARMT_CKPT)")
+def test_fused_scan_backward_matches_gemm_path_real_dimensions():
+    """k_post_bwd against the same build's GEMM path at the real dimensions, TF32 on, parameter by parameter: the ratio
+    of the two bf16 gradients' errors against the fp32 original (measured on 4 inputs: median 1.000-1.002, 90th
+    percentile <= 1.044)"""
+    from recurrent_armt import RecurrentARMTConfig, RecurrentARMTForCausalLM
+    from recurrent_armt.backbones import load_base_model
+    torch.manual_seed(0)
+    base = load_base_model(CKPT, dtype=torch.float32).cuda()
+    m = RecurrentARMTForCausalLM(RecurrentARMTConfig(num_mem_tokens=32, d_mem=64, segment_size=1024), base_model=base).cuda()
+    with torch.no_grad():
+        for memory in m.memory_layers.values():
+            memory.W_mv.weight.normal_(std=0.02)
+    m.train()
+    ids = torch.randint(3, 32000, (2, 3 * 1024), generator=torch.Generator().manual_seed(0)).cuda()
+    with tf32(False):
+        _, gref = _grads(m, lambda: m(input_ids=ids, labels=ids))
+    g = {}
+    for gemm in (True, False):
+        with scan_bwd_gemms(gemm), torch.autocast("cuda", dtype=torch.bfloat16), tf32(True):
+            r = runner(m)
+            _, g[gemm] = _grads(m, lambda: r(input_ids=ids, labels=ids))
+    rn = lambda a, b: ((a.double() - b.double()).norm() / b.double().norm().clamp_min(1e-30)).item()
+    ratio = sorted(rn(g[False][n], x) / max(rn(g[True][n], x), 1e-9) for n, x in gref.items() if x is not None)
+    q = lambda f: ratio[int(f * (len(ratio) - 1))]
+    print(f"\n[k_post_bwd / GEMM path, TF32 on] per-parameter error ratio: median {q(.5):.3f}  90% {q(.9):.3f}  max {ratio[-1]:.2f}")
+    assert q(.5) <= 1.05 and q(.9) <= 1.15, (q(.5), q(.9))
 
 
 def test_training_steps_do_not_repack_weights():

@@ -20,7 +20,7 @@ summary: [reports/carmt_speedup.md](../reports/carmt_speedup.md). Raw outputs: [
 | `train_carmt.py` | runs the unchanged `train.py` with carmt: `torchrun ... carmt/train_carmt.py <train.py args>` |
 | `jobs/train_carmt.json` | router job: the `gdn2_370m_armt` run through `train_carmt.py` |
 | `build_env.sh` | installs a CUDA 12.6 toolkit into a separate prefix (the jobs' env has none) and builds |
-| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 53 + 12 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
+| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 56 + 12 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
 | `qwen35_check.py` | Qwen3.5-0.8B-Base + ARMT: carmt vs HF / the original / the exact recurrence, fp32 and bf16 gradients |
 | `bench.py`, `profile_kernels.py`, `long_context.py`, `speedup_figure.py` | speed vs the original; per-kernel GPU time; memory vs context length; the report figure |
 | `profile_phases.py`, `kbench.cu`, `kbench_cmp.py`, `gemm_search.cu` | development: a training step by phase (`ARMT_PROF=1`); one (layer, segment) step by phase at the real sizes, without Python, with output dumps to compare builds; the GEMM tuner's choice against every cuBLASLt candidate |
@@ -81,7 +81,8 @@ After a change none of these can see (e.g. a raw NCCL write into the parameters)
   × tile × stages × swizzle × custom option, then split-k for the best few).
 
 For a bf16 output, split-k is allowed only with the fp32 reduction: cuBLASLt's in-place and output-type reductions sum the
-splits in bf16, which made the bf16 gradients ~20% less accurate.
+splits in bf16, which made the bf16 gradients ~20% less accurate. cuBLAS's own calls get the same rule from the handle's
+math mode (`CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION`).
 
 The candidates run in rounds of single calls, in a random order each round, and the median counts: the GPU mostly runs
 at its power cap, where the clock drifts. Short best-of-N timings picked kernels up to 20% slower than the best for the
@@ -92,7 +93,8 @@ call), and the kernel with the best sum of the two times, each relative to its r
 cap-only choice this made the 370M model's training step 6.9% faster and its inference forward 8.9% faster. The search
 takes about a minute for the 370M model's shapes, once; it prints one line when it starts.
 
-The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>_t4.txt` under a file lock, so DDP ranks
+The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>_t5.txt` (`_t5_l1.txt` for `ARMT_GEMM_TUNE=1`, so
+its lighter search never stands in for the full one) under a file lock, so DDP ranks
 and later runs read them instead of tuning again, and so compute with the same kernels. When two processes tune the same
 shape at once, the first one written wins and both use it. The lock is never held while the GPU works.
 - The choices are kept for good. Shapes first seen in a backward are timed while other work (e.g. DDP's all-reduce)
@@ -186,7 +188,9 @@ The chunked scan's fp32 gate gradients (`A_log`, `dt_bias`, `in_proj_a`) lose pr
 A = 4. The tests draw A in [0.01, 4]; Qwen3.5-0.8B has A in [0.001, 10.6], median 0.27.
 
 **Speed** (RTX 5880 Ada, bf16, batch 4 × 8192 tokens = 8 segments of 1024, 32 memory tokens; the original layers-first with
-flash attention, as in `train.py`; `records/bench_rtx5880_qwen35_bf16.json`):
+flash attention, as in `train.py`; `records/bench_rtx5880_qwen35_bf16.json`). Measured on the previous build
+(`hybrid-qwen35`), before the Nov 2026 kernel work (see **Speed** below), which also speeds up the hybrid's recurrent layers;
+not re-measured, since the GPUs were busy with training runs:
 
 | workload | original | carmt | speedup |
 |---|---|---|---|
@@ -222,7 +226,9 @@ The GDN-2 recurrence `S_t = (I - k_t (b_t k_t)^T) Diag(e^{g_t}) S_{t-1} + k_t (w
   - Only the four diagonal blocks use exact pairwise exponentials. `A` is inverted blockwise.
 - **Inter-chunk.** A sequential pass per (sample, head, 32 state columns) on tensor cores (WMMA); the state stays fp32 in
   shared memory.
-- **Chunk-parallel matmuls.** cuBLAS strided-batched GEMMs (`o = Qg S0 + M vn`, and 12 GEMMs in the backward).
+- **Chunk-parallel matmuls.** cuBLAS strided-batched GEMMs: `u = A wv`, `Wm = A y` and `o = Qg S0 + M vn` in the forward;
+  in the backward 2 before the state pass and 10 after it. With TF32 on (as `train.py` runs) the 10 are one fused kernel,
+  `k_post_bwd`, which reads each operand once; `ARMT_SCAN_BWD_GEMMS=1` forces the GEMMs.
 - **Padding.** Chunks are zero-padded; a padded token (`k = v = b = w = 0`, `g = 0`) is an exact no-op.
 - **fp32 build.** It uses CUDA-core variants of the same kernels in fp32, which the tight equivalence checks run against.
 
@@ -237,7 +243,7 @@ gradient is a single GEMM; the Python side returns views of it.
 **Inference** runs segment by segment with one segment's activations plus the fixed-size state, and computes the loss per
 segment. Memory therefore doesn't grow with the context length.
 
-## Equivalence (`python -m pytest carmt/tests`, GPU; records: `records/tests_*.log`)
+## Equivalence (`python -m pytest carmt/tests`, GPU; records: `records/tests_rtx5880_kernels.log`, `records/tests_rtx6000_kernels.log`)
 
 Two references:
 - **the original model as it is.** fla's Triton kernels multiply in TF32, so the original itself differs from the exact
@@ -249,11 +255,12 @@ Two references:
 | logits, fp32, 9 configs (head_dim 64/128, sigmoid gate, mem in stream, 2 memory heads + gating, partial wrap, no memory, segment 100 with partial chunks, 3 layers) | ≤ 1e-4 relative to the exact reference (fla path: ~1e-3) |
 | loss / every parameter gradient, fp32, same 9 configs | loss within 1e-5; each gradient ≤ max(3e-4, 1/5 of the original's own TF32 error) |
 | bf16 gradients at the real dimensions (370M checkpoint, head_dim 128, segment 1024, 32 memory tokens), per-parameter relative-norm error vs fp32, both bf16 builds, TF32 off and on | median 0.80–0.88× the original's own bf16 error; 95th percentile ≤ 1.3× (RTX 5880 and RTX 6000) |
+| the fused scan backward (`k_post_bwd`, TF32 on) against the same build's GEMM path (`ARMT_SCAN_BWD_GEMMS=1`), per-parameter error vs fp32 at the real dimensions; and both against the exact reference at head_dim 64 / 128 | error ratio median 1.000–1.002, 90th percentile ≤ 1.044 (4 inputs; `records/kernels_ab_rtx6000.log`) |
 | state: pieces == whole (also > 4096 segments), returned state == original's, C state continues in the original and vice versa, generation == forward | ≤ 1e-4 |
 | no-grad calls between a training forward and its backward; two models in one process; forward after fused / foreach AdamW and SGD steps; frozen backbone; errors raise; memory visible to PyTorch; no re-pack between micro-steps | pass |
 | state dropout (training), `state_reset`, labels mask / -100, grad accumulation, `accelerate` API | pass |
 | real GDN-2 370M checkpoint, 2×1024 tokens, 32 memory tokens | fp32: loss within 9.5e-7 of the exact reference (original: 1.2e-4) |
-| DDP, ZeRO-1, ZeRO-2 on 2 GPUs (`tests/dist_check.py`, `records/dist_check_2x_rtx5880.log`) | gradients == reference (fp32: ≤ 3.3e-5; bf16 370M vs single-process carmt: ≤ 4e-7); ranks identical after steps |
+| DDP, ZeRO-1, ZeRO-2 on 2 GPUs (`tests/dist_check.py`; current build `records/dist_check_2x_rtx5880_kernels.log`, previous `records/dist_check_2x_rtx5880.log`) | fp32 gradients == reference (≤ 1.9e-5), ranks identical after steps. The bf16 370M part (previous build: ≤ 4e-7 vs single-process carmt) ran out of memory beside other training runs and was not re-run; the 2-GPU DDP job's losses equal the previous build's (`records/train_ddp_rtx6000_kernels_*.log`) |
 | 100-step 2-GPU training run vs the PyTorch run, same data (`records/train_ddp_rtx6000_*`) | train loss within 2e-4 at every logged step (equal to 4 decimals at 9 of 10); eval loss identical |
 
 ## Speed

@@ -295,6 +295,7 @@ typedef struct {
     void* hy_args;            // a copy of the ArmtForwardArgs of armt_hy_begin
     struct Prof* prof;        // ARMT_PROF=1: phase profiler (else NULL)
     int prof_pass;            // 0 forward, 1 the backward's recompute, 2 backward
+    int post_gemm;            // ARMT_SCAN_BWD_GEMMS=1: the scan backward's GEMM path even with TF32 on (no k_post_bwd)
 } Ctx;
 
 // =============================================================================================== optional phase profiler
@@ -365,11 +366,12 @@ static float* GPG(Ctx* c, int i0, int i1) {
 // large shapes, the fastest few of an exhaustive search over cuBLASLt's configurations (algorithm x tile x stages x CTA
 // swizzle x custom option, then split-k x reduction scheme for the best of those). The candidates are timed in rounds of
 // single calls, in a fresh random order every round (the GPU mostly runs at its power cap, and its clock drifts), and a
-// candidate's median counts; large shapes are also timed in bursts below the cap (see tune_gemm). The choice must not depend on timing noise (bf16 results differ slightly between algorithms,
-// and DDP ranks / repeated runs should compute the same thing), so it is made once per GPU model and cuBLAS version and
-// persisted: ARMT_GEMM_CACHE=<path prefix> (the Python side sets it next to the library) stores every choice in
-// <prefix>_<gpu>_<cublasLt version>_t4.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
-// read the first process's choice instead of tuning again. Plans are shared by every context of the process.
+// candidate's median counts; large shapes are also timed in bursts below the cap (see tune_gemm). The choice must not
+// depend on timing noise (bf16 results differ slightly between algorithms, and DDP ranks / repeated runs should compute
+// the same thing), so it is made once per GPU model and cuBLAS version and persisted: ARMT_GEMM_CACHE=<path prefix> (the
+// Python side sets it next to the library) stores every choice in <prefix>_<gpu>_<cublasLt version>_t5.txt (_t5_l1.txt
+// for ARMT_GEMM_TUNE=1), written under a file lock, so concurrent processes (DDP ranks) and later runs read the first
+// process's choice instead of tuning again. Plans are shared by every context of the process.
 // ARMT_GEMM_TUNE=0: always cublasGemmEx; 1: no exhaustive search; 2 (default): as above.
 // ARMT_GEMM_LOG=1: print each tuned shape's default and chosen time.
 #define LT_WS (32u << 20)
@@ -401,7 +403,10 @@ static void gemm_tune_init() {
         if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&pr, dev) == cudaSuccess) {
             std::string name = pr.name;
             for (char& ch : name) if (!isalnum((unsigned char)ch)) ch = '_';
-            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t4.txt";
+            // the tune level is part of the name: level 1's choices (no exhaustive search, no burst timing) never stand in
+            // for level 2's
+            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t5" +
+                           (g_tune == 1 ? "_l1" : "") + ".txt";
         }
     }
 }
@@ -1154,7 +1159,10 @@ __global__ void __launch_bounds__(256, 3) k_prep_fwd(const floatX* __restrict__ 
     int tprev = -1000;
     float ea = EXPF(A_log[h]);
     float dtbv[V];
-    if constexpr (!SG) ldv<V>(dtb + ch, dtbv);
+    if constexpr (!SG) {   // one by one: a framework tensor, possibly only 4-byte aligned (ZeRO flat buffers)
+#pragma unroll
+        for (int j = 0; j < V; j++) dtbv[j] = dtb[ch + j];
+    }
     // conv + SiLU of stream p at row `row` into y; slides the window
     auto conv = [&](int p, long row, float* y) {
         float cur[V];
@@ -1275,7 +1283,10 @@ __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__
     for (int j = 0; j < V; j++) acc_dtb[j] = 0.f;
     float ea = EXPF(A_log[h]);
     float dtbv[V];
-    if constexpr (!SG) ldv<V>(dtb + ch, dtbv);
+    if constexpr (!SG) {   // one by one: a framework tensor, possibly only 4-byte aligned (ZeRO flat buffers)
+#pragma unroll
+        for (int j = 0; j < V; j++) dtbv[j] = dtb[ch + j];
+    }
     int rpw = (rows_per_block + nw - 1) / nw;
     int r0 = blockIdx.y * rows_per_block, r1 = min(N, r0 + rows_per_block);
     int ra = r0 + wl * rpw, rz = min(r1, ra + rpw);
@@ -1423,7 +1434,8 @@ __global__ void __launch_bounds__(128) k_prep_bwd2(const floatX* __restrict__ P,
         else { o[0] = 0.f; o[1] = 0.f; }
     };
     auto XX = [&](int t, float* o) {
-        if (t >= 0) ldv<2>(P + (rb + t) * NP + cc, o);
+        if (t >= T1) { o[0] = 0.f; o[1] = 0.f; }   // past the sample (unused; for the last sample, past P's end)
+        else if (t >= 0) ldv<2>(P + (rb + t) * NP + cc, o);
         else {
 #pragma unroll
             for (int k = 0; k < 2; k++) o[k] = cs_in ? cs_in[sb0 + k * W + W + t] : 0.f;
@@ -2986,7 +2998,7 @@ static void scan_bwd(Ctx* c, const Step& s, const float* dS_out, float* dS_in, i
     prof_mark(c, PR_SG_POST);
     const float* dglp = NULL;
 #ifndef SCAN32
-    if (c->d.c.allow_tf32) {   // the fused kernel (T1, dL in tf32); with tf32 off, the GEMMs below (fp32 T1, dL)
+    if (c->d.c.allow_tf32 && !c->post_gemm) {   // the fused kernel (T1, dL in tf32); with tf32 off, the GEMMs below (fp32 T1, dL)
         float* dglw = BF(c, B_DGLP, float, s.nchB * KD);
         int grid = nb < c->sms ? nb : c->sms;   // persistent, one block per SM
         k_post_bwd<KD><<<grid, 512, PB_SMEM(KD), c->stream>>>(dO, S0, vn, dSe, dvn, AmX, Am, cwv, y, gl, dQg, dKt, dwv, dy, dM, dL,
@@ -3445,6 +3457,10 @@ API void* armt_create(const ArmtConfig* cfg) {
     Ctx* c = (Ctx*)calloc(1, sizeof(Ctx));
     make_dims(&c->d, cfg);
     CB(cublasCreate(&c->blas));
+    // split-k partial sums in the compute type (fp32), never in a bf16 output type (as the tuner's lt_precise requires of
+    // cuBLASLt's candidates); TF32 is chosen per call through the compute type and is unaffected
+    CB(cublasSetMathMode(c->blas, (cublasMath_t)(CUBLAS_DEFAULT_MATH | CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION)));
+    { const char* pg = getenv("ARMT_SCAN_BWD_GEMMS"); c->post_gemm = pg && atoi(pg) ? 1 : 0; }
     CB(cublasLtCreate(&c->lt));
     gemm_tune_init();
     int dev; CK(cudaGetDevice(&dev));

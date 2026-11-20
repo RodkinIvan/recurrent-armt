@@ -37,3 +37,28 @@ final (ae30e57)                                      1.004 / 1.000 (seeds 1, 2)
 with ARMT_GEMM_TUNE=0 in both builds the gap before the cumsum fix was the same (1.061 / 1.045): not the GEMM choices.
 kbench (one layer, random data) showed none of this: error vs an fp32 kbench build equal to hybrid-qwen35's on every
 tensor (median ratio 1.00), at batch 2 and 8, seeds 1-5; both builds deterministic up to atomics (<= 4e-7).
+
+== review fixes (dt_bias read one by one, cuBLAS handle without reduced-precision split-k reductions, the tune level in
+   the GEMM cache name (_t5 / _t5_l1), k_prep_bwd2's read past P): in-process A/B against ae30e57. Two of the user's
+   training jobs shared the GPUs during this run, so the absolute times are high; the alternation keeps the ratio fair.
+train B=8: A 4743.0 ms  B 4687.4 ms  B/A 0.988  (per-round B/A: 0.989 0.987 0.989 0.989 1.008 0.988 0.989 0.988 1.010 0.988)  losses 12.361642 12.361642
+infer B=8: A 1224.5 ms  B 1198.4 ms  B/A 0.979  (per-round B/A: 0.981 0.976 0.977 0.979 0.983 0.981 0.979 0.982 0.979 0.980)  losses 12.361642 12.361642
+
+== k_post_bwd against the same build's GEMM path (ARMT_SCAN_BWD_GEMMS=1), both with TF32 on (train.py's setting): bf16
+   gradient error vs the fp32 original (TF32 off), real 370M model, 2 x 3072 tokens, 4 input seeds
+seed 0: carmt/original error ratio, median / 95%: GEMM path 0.855 / 1.288   k_post_bwd 0.857 / 1.274
+seed 0: per-parameter error k_post_bwd / GEMM path: median 1.000  90% 1.034  max 2.09
+seed 0: relative difference k_post_bwd vs GEMM path gradients: median 1.58e-03  max 3.29e-02
+seed 1: carmt/original error ratio, median / 95%: GEMM path 0.946 / 1.325   k_post_bwd 0.947 / 1.309
+seed 1: per-parameter error k_post_bwd / GEMM path: median 1.002  90% 1.038  max 4.72
+seed 1: relative difference k_post_bwd vs GEMM path gradients: median 1.57e-03  max 1.54e-02
+seed 2: carmt/original error ratio, median / 95%: GEMM path 0.857 / 1.377   k_post_bwd 0.855 / 1.342
+seed 2: per-parameter error k_post_bwd / GEMM path: median 1.002  90% 1.044  max 2.52
+seed 2: relative difference k_post_bwd vs GEMM path gradients: median 1.56e-03  max 9.56e-03
+seed 3: carmt/original error ratio, median / 95%: GEMM path 0.948 / 1.349   k_post_bwd 0.956 / 1.385
+seed 3: per-parameter error k_post_bwd / GEMM path: median 1.001  90% 1.035  max 3.29
+seed 3: relative difference k_post_bwd vs GEMM path gradients: median 1.55e-03  max 3.97e-02
+(the max is a memory write-gate bias, W_mb.bias, noise-dominated in every bf16 path)
+tests (pytest carmt/tests -rA, records/tests_rtx6000_kernels.log): 68 passed, incl. the new
+test_fused_scan_backward_matches_gemm_path (head_dim 64, 128) and its real-dimension version:
+[k_post_bwd / GEMM path, TF32 on] per-parameter error ratio: median 1.000  90% 1.032  max 2.09

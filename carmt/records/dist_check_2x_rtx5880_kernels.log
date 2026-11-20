@@ -1,0 +1,67 @@
+W1120 23:05:51.169000 1967167 site-packages/torch/distributed/run.py:803] 
+W1120 23:05:51.169000 1967167 site-packages/torch/distributed/run.py:803] *****************************************
+W1120 23:05:51.169000 1967167 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1120 23:05:51.169000 1967167 site-packages/torch/distributed/run.py:803] *****************************************
+world 2 | NVIDIA RTX 5880 Ada Generation | NCCL_P2P_DISABLE=1 | model gdn2
+PASS  DDP fp32: averaged gradients == reference  (worst rel 1.9e-05 model.model.layers.0.attn.A_log)
+PASS  DDP fp32: 2-step gradient accumulation == reference  (worst rel 6.3e-06 model.model.embeddings.weight)
+PASS  DDP fp32: accumulation with no_sync == reference  (worst rel 6.3e-06 model.model.embeddings.weight)
+PASS  DDP fp32: parameters identical across ranks after 3 AdamW steps  
+PASS  DDP fp32: C forward sees the updated weights  
+PASS  ZeRO-1 fp32: full gradients == reference  (worst rel 1.9e-05 model.model.layers.0.attn.A_log)
+PASS  ZeRO-1 fp32: parameters identical across ranks after 3 steps  
+PASS  ZeRO-1 fp32: C forward sees the updated weights  
+PASS  ZeRO-2 fp32: full gradients == reference  (worst rel 1.9e-05 model.model.layers.0.attn.A_log)
+PASS  ZeRO-2 fp32: parameters identical across ranks after 3 steps  
+PASS  ZeRO-2 fp32: C forward sees the updated weights  
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 16277.43it/s]
+Loading weights: 100%|██████████| 355/355 [00:00<00:00, 16569.24it/s]
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/tests/dist_check.py", line 225, in <module>
+[rank0]:     main()
+[rank0]:   File "/mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/tests/dist_check.py", line 219, in main
+[rank0]:     part_b(ckpt)
+[rank0]:   File "/mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/tests/dist_check.py", line 168, in part_b
+[rank0]:     e = max(rn(g[n], ref[n]) for n in ref)
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/tests/dist_check.py", line 168, in <genexpr>
+[rank0]:     e = max(rn(g[n], ref[n]) for n in ref)
+[rank0]:             ^^^^^^^^^^^^^^^^
+[rank0]:   File "/mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/tests/dist_check.py", line 163, in <lambda>
+[rank0]:     rn = lambda a, b: ((a.double() - b.double()).norm() / b.double().norm().clamp_min(1e-30)).item()
+[rank0]:                         ^^^^^^^^^^
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 250.00 MiB. GPU 0 has a total capacity of 47.37 GiB of which 76.00 MiB is free. Process 1937217 has 10.05 GiB memory in use. Process 1944462 has 8.92 GiB memory in use. Process 1963224 has 15.12 GiB memory in use. Including non-PyTorch memory, this process has 13.17 GiB memory in use. Of the allocated memory 12.04 GiB is allocated by PyTorch, and 564.84 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+W1120 23:06:14.974000 1967167 site-packages/torch/distributed/elastic/multiprocessing/api.py:908] Sending process 1967234 closing signal SIGTERM
+E1120 23:06:15.239000 1967167 site-packages/torch/distributed/elastic/multiprocessing/api.py:882] failed (exitcode: 1) local_rank: 0 (pid: 1967233) of binary: /mnt/data/users/ivan.rodkin/carmt/env/bin/python
+Traceback (most recent call last):
+  File "/mnt/data/users/ivan.rodkin/carmt/env/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/mnt/data/users/ivan.rodkin/carmt/env/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 357, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/mnt/data/users/ivan.rodkin/carmt/env/lib/python3.11/site-packages/torch/distributed/run.py", line 936, in main
+    run(args)
+  File "/mnt/data/users/ivan.rodkin/carmt/env/lib/python3.11/site-packages/torch/distributed/run.py", line 927, in run
+    elastic_launch(
+  File "/mnt/data/users/ivan.rodkin/carmt/env/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 156, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/data/users/ivan.rodkin/carmt/env/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 293, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+carmt/tests/dist_check.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-11-20_23:06:14
+  host      : ws006599.mbzu.ae
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1967233)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
