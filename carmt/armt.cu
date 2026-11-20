@@ -1071,30 +1071,62 @@ static __device__ __forceinline__ void conv_vec(float* acc, const T* P, int NP, 
 // SG (Qwen3.5): one beta and one gate input per head, at columns ob + h and oa + h of P (dt_bias per head); beta is both
 // the b and the w of the GDN-2 recurrence and the gate is the same for all channels of the head.
 template <int KD, bool SG>
-__global__ void k_prep_fwd(const floatX* __restrict__ P, int NP, const floatX* __restrict__ fb,
+__global__ void __launch_bounds__(256, 3) k_prep_fwd(const floatX* __restrict__ P, int NP, const floatX* __restrict__ fb,
                            const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv, const float* __restrict__ cs_in,
                            const float* __restrict__ A_log, const float* __restrict__ dtb,
                            floatS* __restrict__ cq, floatS* __restrict__ ck, float* __restrict__ cg, floatS* __restrict__ cb, floatS* __restrict__ cwv,
                            int B, int Tr, int Tm, int H, int nr, int nch, int W, float qscale, int ob, int oa) {
-    // one warp per run of PRUN consecutive chunk positions of one (b, h); the conv inputs slide through registers (W = 4)
+    // one warp per run of PRUN consecutive chunk positions of one (b, h); the conv inputs slide through registers (W = 4).
+    // A block's 8 runs cover CH positions, so all its warps share one (b, h) (npos is a multiple of CH): the head's conv
+    // weights sit in shared memory as [stream][tap][channel] (each lane's V channels of a tap: one vector load). The three
+    // streams are done one after the other, which keeps few registers live (3 blocks / SM).
     constexpr int V = KD / 32, PRUN = 8, CW = 4;
-    long gw = (long)blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    static_assert(PRUN * 8 == CH, "a block's runs cover one chunk");
+    __shared__ __align__(16) float swt[3][CW][KD];
     int lane = threadIdx.x & 31;
     int npos = nch * CH;
+    {
+        long p0 = (long)blockIdx.x * (blockDim.x >> 5) * PRUN;
+        int hb = (int)((p0 / npos) % H);
+        for (int e = threadIdx.x; e < 3 * CW * KD; e += blockDim.x) {
+            int p = e / (CW * KD), i = (e / KD) % CW, cc = e % KD;
+            swt[p][i][cc] = (p == 0 ? wq : (p == 1 ? wk : wv))[(long)(hb * KD + cc) * CW + i];
+        }
+    }
+    __syncthreads();
+    long gw = (long)blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
     if (gw * PRUN >= (long)B * H * npos) return;
     int pos0 = (gw * PRUN) % npos; long bh = (gw * PRUN) / npos; int h = bh % H, b = bh / H;
     int T1 = Tr + Tm, KDt = H * KD, Cc = 3 * KDt, ch = h * KD + lane * V;
     long rb = (long)b * T1, csb = (long)b * Cc;
-    float wts[3][V][CW];
-#pragma unroll
-    for (int p = 0; p < 3; p++)
-#pragma unroll
-        for (int j = 0; j < V; j++)
-#pragma unroll
-            for (int i = 0; i < CW; i++) wts[p][j][i] = (p == 0 ? wq : (p == 1 ? wk : wv))[(long)(ch + j) * CW + i];
     float win[3][CW - 1][V];   // inputs at t-3, t-2, t-1
     int tprev = -1000;
     float ea = EXPF(A_log[h]);
+    float dtbv[V];
+    if constexpr (!SG) ldv<V>(dtb + ch, dtbv);
+    // conv + SiLU of stream p at row `row` into y; slides the window
+    auto conv = [&](int p, long row, float* y) {
+        float cur[V];
+        ldv<V>(P + row * NP + p * KDt + ch, cur);
+        float w[V];
+        ldv<V>(&swt[p][CW - 1][lane * V], w);
+#pragma unroll
+        for (int j = 0; j < V; j++) y[j] = w[j] * cur[j];
+#pragma unroll
+        for (int s = 0; s < CW - 1; s++) {
+            ldv<V>(&swt[p][s][lane * V], w);
+#pragma unroll
+            for (int j = 0; j < V; j++) y[j] += w[j] * win[p][s][j];
+        }
+#pragma unroll
+        for (int j = 0; j < V; j++) y[j] = silu(y[j]);
+#pragma unroll
+        for (int s = 0; s < CW - 2; s++)
+#pragma unroll
+            for (int j = 0; j < V; j++) win[p][s][j] = win[p][s + 1][j];
+#pragma unroll
+        for (int j = 0; j < V; j++) win[p][CW - 2][j] = cur[j];
+    };
     for (int r = 0; r < PRUN; r++) {
         int pos = pos0 + r;
         long o = (bh * npos + pos) * KD + lane * V;
@@ -1119,45 +1151,43 @@ __global__ void k_prep_fwd(const floatX* __restrict__ P, int NP, const floatX* _
         }
         tprev = t;
         long row = rb + t;
-        float cur[3][V], y[3][V];
+        float y[V];
+        conv(0, row, y);             // q: l2norm (x qscale)
+        float sq = 0.f;
 #pragma unroll
-        for (int p = 0; p < 3; p++) {
-            ldv<V>(P + row * NP + p * KDt + ch, cur[p]);
+        for (int j = 0; j < V; j++) sq += y[j] * y[j];
+        sq = warp_sum(sq);
+        float iq = qscale / sqrtf(sq + 1e-6f);
 #pragma unroll
-            for (int j = 0; j < V; j++) {
-                float a = wts[p][j][CW - 1] * cur[p][j];
+        for (int j = 0; j < V; j++) y[j] *= iq;
+        stv<V>(cq + o, y);
+        conv(1, row, y);             // k: l2norm
+        float sk = 0.f;
 #pragma unroll
-                for (int s = 0; s < CW - 1; s++) a += wts[p][j][s] * win[p][s][j];
-                y[p][j] = silu(a);
-            }
+        for (int j = 0; j < V; j++) sk += y[j] * y[j];
+        sk = warp_sum(sk);
+        float ik = 1.f / sqrtf(sk + 1e-6f);
 #pragma unroll
-            for (int s = 0; s < CW - 2; s++)
-#pragma unroll
-                for (int j = 0; j < V; j++) win[p][s][j] = win[p][s + 1][j];
-#pragma unroll
-            for (int j = 0; j < V; j++) win[p][CW - 2][j] = cur[p][j];
-        }
-        float sq = 0.f, sk = 0.f;
-#pragma unroll
-        for (int j = 0; j < V; j++) { sq += y[0][j] * y[0][j]; sk += y[1][j] * y[1][j]; }
-        sq = warp_sum(sq); sk = warp_sum(sk);
-        float iq = qscale / sqrtf(sq + 1e-6f), ik = 1.f / sqrtf(sk + 1e-6f);
-        float bb[V], ww[V], f[V], g[V];
+        for (int j = 0; j < V; j++) y[j] *= ik;
+        stv<V>(ck + o, y);
+        conv(2, row, y);             // v, then the gates
+        float bb[V], g[V];
         if constexpr (SG) {
             float bs = sigm(toF(P[row * NP + ob + h])), gs = -ea * softplus(toF(P[row * NP + oa + h]) + dtb[h]);
 #pragma unroll
-            for (int j = 0; j < V; j++) { y[0][j] *= iq; y[1][j] *= ik; bb[j] = bs; ww[j] = bs * y[2][j]; g[j] = gs; }
+            for (int j = 0; j < V; j++) { bb[j] = bs; y[j] *= bs; g[j] = gs; }
         } else {
+            float ww[V], f[V];
             ldv<V>(P + row * NP + 3 * KDt + ch, bb);
             ldv<V>(P + row * NP + 4 * KDt + ch, ww);
             ldv<V>(fb + row * KDt + ch, f);
 #pragma unroll
             for (int j = 0; j < V; j++) {
-                y[0][j] *= iq; y[1][j] *= ik; bb[j] = sigm(bb[j]); ww[j] = sigm(ww[j]) * y[2][j];
-                g[j] = -ea * softplus(f[j] + dtb[ch + j]);
+                bb[j] = sigm(bb[j]); y[j] *= sigm(ww[j]);
+                g[j] = -ea * softplus(f[j] + dtbv[j]);
             }
         }
-        stv<V>(cq + o, y[0]); stv<V>(ck + o, y[1]); stv<V>(cb + o, bb); stv<V>(cwv + o, ww); stv<V>(cg + o, g);
+        stv<V>(cb + o, bb); stv<V>(cwv + o, y); stv<V>(cg + o, g);
     }
 }
 // conv state after position Pc: the last W inputs x[Pc-W .. Pc-1] (from the previous state for negative positions)
@@ -1178,50 +1208,96 @@ __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__
                             const floatS* __restrict__ dq, const floatS* __restrict__ dk, const floatS* __restrict__ db, const floatS* __restrict__ dg, const floatS* __restrict__ dwv,
                             floatS* __restrict__ dc, floatX* __restrict__ dP, floatX* __restrict__ df, float* __restrict__ dAlog, float* __restrict__ ddtb,
                             int B, int Tr, int Tm, int H, int nr, int nch, int W, float qscale, int rows_per_block, int ob, int oa) {
-    constexpr int V = KD / 32;
+    // grid (H, row blocks); each warp takes rows_per_block / 8 consecutive rows, the conv inputs sliding through registers
+    // (W = 4), the head's conv weights in shared memory as [stream][tap][channel]; the streams one after the other.
+    constexpr int V = KD / 32, CW = 4;
+    __shared__ __align__(16) float swt[3][CW][KD];
     int h = blockIdx.x, lane = threadIdx.x & 31, wl = threadIdx.x >> 5, nw = blockDim.x >> 5;
     int T1 = Tr + Tm, KDt = H * KD, Cc = 3 * KDt, N = B * T1, ch = h * KD + lane * V;
+    for (int e = threadIdx.x; e < 3 * CW * KD; e += blockDim.x) {
+        int p = e / (CW * KD), i = (e / KD) % CW, cc = e % KD;
+        swt[p][i][cc] = (p == 0 ? wq : (p == 1 ? wk : wv))[(long)(h * KD + cc) * CW + i];
+    }
+    __syncthreads();
     float acc_dtb[V], acc_A = 0.f;
 #pragma unroll
     for (int j = 0; j < V; j++) acc_dtb[j] = 0.f;
     float ea = EXPF(A_log[h]);
+    float dtbv[V];
+    if constexpr (!SG) ldv<V>(dtb + ch, dtbv);
+    int rpw = (rows_per_block + nw - 1) / nw;
     int r0 = blockIdx.y * rows_per_block, r1 = min(N, r0 + rows_per_block);
-    for (int row = r0 + wl; row < r1; row += nw) {
+    int ra = r0 + wl * rpw, rz = min(r1, ra + rpw);
+    float win[3][CW - 1][V];   // conv inputs at t-3, t-2, t-1
+    int tprev = -1000;
+    // pre-activation conv of stream p at (b, t): sum_i w[i] x(t - W + 1 + i), in conv_vec's order; slides the window
+    auto conv = [&](int p, long rowi, float* a) {
+        float cur[V], w[V];
+        ldv<V>(P + rowi * NP + p * KDt + ch, cur);
+        ldv<V>(&swt[p][0][lane * V], w);
+#pragma unroll
+        for (int j = 0; j < V; j++) a[j] = 0.f + w[j] * win[p][0][j];
+#pragma unroll
+        for (int s2 = 1; s2 < CW - 1; s2++) {
+            ldv<V>(&swt[p][s2][lane * V], w);
+#pragma unroll
+            for (int j = 0; j < V; j++) a[j] += w[j] * win[p][s2][j];
+        }
+        ldv<V>(&swt[p][CW - 1][lane * V], w);
+#pragma unroll
+        for (int j = 0; j < V; j++) a[j] += w[j] * cur[j];
+#pragma unroll
+        for (int s2 = 0; s2 < CW - 2; s2++)
+#pragma unroll
+            for (int j = 0; j < V; j++) win[p][s2][j] = win[p][s2 + 1][j];
+#pragma unroll
+        for (int j = 0; j < V; j++) win[p][CW - 2][j] = cur[j];
+    };
+    for (int row = ra; row < rz; row++) {
         int b = row / T1, t = row % T1;
         long rb = (long)b * T1, csb = (long)b * Cc, ri = row;
-        long o = (((long)b * H + h) * nch * CH + pos_of_tok(t, Tr, nr)) * KD + lane * V;
-        float cq[V], ckk[V], cv[V], q[V], k[V], sq = 0.f, sk = 0.f;
-        conv_vec<V>(cq, P, NP, ch, wq + (long)ch * W, cs_in, csb + ch, rb, t, W);
-        conv_vec<V>(ckk, P, NP, KDt + ch, wk + (long)ch * W, cs_in, csb + KDt + ch, rb, t, W);
-        conv_vec<V>(cv, P, NP, 2 * KDt + ch, wv + (long)ch * W, cs_in, csb + 2 * KDt + ch, rb, t, W);
+        if (t != tprev + 1) {   // (re)load the window
 #pragma unroll
-        for (int j = 0; j < V; j++) { q[j] = silu(cq[j]); k[j] = silu(ckk[j]); sq += q[j] * q[j]; sk += k[j] * k[j]; }
-        sq = warp_sum(sq); sk = warp_sum(sk);
-        float nq = sqrtf(sq + 1e-6f), nk = sqrtf(sk + 1e-6f), dotq = 0.f, dotk = 0.f;
-        float gq[V], gk[V], gb[V], gg[V], gwv[V];
-        ldv<V>(dq + o, gq); ldv<V>(dk + o, gk); ldv<V>(db + o, gb); ldv<V>(dg + o, gg); ldv<V>(dwv + o, gwv);
+            for (int p = 0; p < 3; p++)
 #pragma unroll
-        for (int j = 0; j < V; j++) { gq[j] *= qscale; dotq += q[j] / nq * gq[j]; dotk += k[j] / nk * gk[j]; }
-        dotq = warp_sum(dotq); dotk = warp_sum(dotk);
-        float bb[V], ww[V], f[V], o_dc[V], o_b[V], o_w[V], o_f[V];
-        if constexpr (!SG) {
-            ldv<V>(P + ri * NP + 3 * KDt + ch, bb);
-            ldv<V>(P + ri * NP + 4 * KDt + ch, ww);
-            ldv<V>(fb + ri * KDt + ch, f);
+                for (int s2 = 0; s2 < CW - 1; s2++) {
+                    int tt = t - (CW - 1) + s2;
+                    if (tt >= 0) ldv<V>(P + (rb + tt) * NP + p * KDt + ch, win[p][s2]);
+                    else {
+#pragma unroll
+                        for (int j = 0; j < V; j++) win[p][s2][j] = cs_in ? cs_in[(csb + p * KDt + ch + j) * CW + CW + tt] : 0.f;
+                    }
+                }
         }
+        tprev = t;
+        long o = (((long)b * H + h) * nch * CH + pos_of_tok(t, Tr, nr)) * KD + lane * V;
+        float cx[V], y[V], gx[V], o_dc[V];
 #pragma unroll
-        for (int j = 0; j < V; j++) o_dc[j] = (gq[j] - q[j] / nq * dotq) / nq * dsilu(cq[j]);
-        stv<V>(dc + ri * Cc + ch, o_dc);
+        for (int sgi = 0; sgi < 2; sgi++) {   // q, k: through l2norm (q also x qscale)
+            conv(sgi, ri, cx);
+            float ss = 0.f;
 #pragma unroll
-        for (int j = 0; j < V; j++) o_dc[j] = (gk[j] - k[j] / nk * dotk) / nk * dsilu(ckk[j]);
-        stv<V>(dc + ri * Cc + KDt + ch, o_dc);
+            for (int j = 0; j < V; j++) { y[j] = silu(cx[j]); ss += y[j] * y[j]; }
+            ss = warp_sum(ss);
+            float nn = sqrtf(ss + 1e-6f), dot = 0.f;
+            ldv<V>((sgi == 0 ? dq : dk) + o, gx);
+#pragma unroll
+            for (int j = 0; j < V; j++) { if (sgi == 0) gx[j] *= qscale; dot += y[j] / nn * gx[j]; }
+            dot = warp_sum(dot);
+#pragma unroll
+            for (int j = 0; j < V; j++) o_dc[j] = (gx[j] - y[j] / nn * dot) / nn * dsilu(cx[j]);
+            stv<V>(dc + ri * Cc + sgi * KDt + ch, o_dc);
+        }
+        conv(2, ri, cx);             // v, then the gates
+        float gb[V], gg[V], gwv[V];
+        ldv<V>(db + o, gb); ldv<V>(dg + o, gg); ldv<V>(dwv + o, gwv);
         if constexpr (SG) {
             // beta enters as b (with k) and as w (with v); the gate is shared by the head's channels: sum over channels
             float bs = sigm(toF(P[ri * NP + ob + h])), x = toF(P[ri * NP + oa + h]) + dtb[h], sb = 0.f, sg = 0.f;
 #pragma unroll
             for (int j = 0; j < V; j++) {
-                o_dc[j] = gwv[j] * bs * dsilu(cv[j]);
-                sb += gb[j] + gwv[j] * silu(cv[j]);
+                o_dc[j] = gwv[j] * bs * dsilu(cx[j]);
+                sb += gb[j] + gwv[j] * silu(cx[j]);
                 sg += gg[j];
             }
             stv<V>(dc + ri * Cc + 2 * KDt + ch, o_dc);
@@ -1232,13 +1308,17 @@ __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__
             if (lane == 0) { stX(dP + ri * NP + ob + h, sb * bs * (1.f - bs)); stX(dP + ri * NP + oa + h, dfs); }
             continue;
         }
+        float bb[V], ww[V], f[V], o_b[V], o_w[V], o_f[V];
+        ldv<V>(P + ri * NP + 3 * KDt + ch, bb);
+        ldv<V>(P + ri * NP + 4 * KDt + ch, ww);
+        ldv<V>(fb + ri * KDt + ch, f);
 #pragma unroll
         for (int j = 0; j < V; j++) {
             float bs = sigm(bb[j]), ws = sigm(ww[j]);
-            o_dc[j] = gwv[j] * ws * dsilu(cv[j]);
-            o_w[j] = gwv[j] * silu(cv[j]) * ws * (1.f - ws);
+            o_dc[j] = gwv[j] * ws * dsilu(cx[j]);
+            o_w[j] = gwv[j] * silu(cx[j]) * ws * (1.f - ws);
             o_b[j] = gb[j] * bs * (1.f - bs);
-            float x = f[j] + dtb[ch + j];
+            float x = f[j] + dtbv[j];
             acc_A += gg[j] * (-ea * softplus(x));
             o_f[j] = gg[j] * (-ea) * (x > 20.f ? 1.f : sigm(x));
             acc_dtb[j] += o_f[j];
@@ -1269,52 +1349,88 @@ __global__ void __launch_bounds__(256, 2) k_prep_bwd1(const floatX* __restrict__
         atomicAdd(ddtb + h * KD + c, s);
     }
 }
-// backward 2: conv input grads. grid (Cc / 128, 1, B): one thread per (channel cc, sample b) walks the tokens with a sliding
-// window (W = 4). dX(t) = sum_i w[i] dc(t+W-1-i) (+ carried-state grad) ; dw[i] += sum_t dc(t) X(t-W+1+i) ; d conv state in.
+// backward 2: conv input grads. grid (Cc / 256, ceil(T1 / P2_TR), B): one thread per (2 channels, range of P2_TR tokens,
+// sample) walks its tokens with a sliding window (W = 4). dX(t) = sum_i w[i] dc(t+W-1-i) (+ carried-state grad) ;
+// dw[i] += sum_t dc(t) X(t-W+1+i) ; d conv state in (by the first range).
+#define P2_TR 128
 template <int W>
 __global__ void __launch_bounds__(128) k_prep_bwd2(const floatX* __restrict__ P, int NP, const floatS* __restrict__ dc,
                                                    const float* __restrict__ convw, const float* __restrict__ cs_in,
                                                    const float* __restrict__ dcs_out, float* __restrict__ dcs_in, floatX* __restrict__ dP,
                                                    float* __restrict__ dconvw, int B, int T1, int Pc, int Cc) {
-    int cc = blockIdx.x * blockDim.x + threadIdx.x, b = blockIdx.z;
+    int cc = 2 * (blockIdx.x * blockDim.x + threadIdx.x), b = blockIdx.z;
+    int t0 = blockIdx.y * P2_TR, t1 = min(T1, t0 + P2_TR);
     if (cc >= Cc) return;
-    float w[W], dw[W], g[W], x[W];   // g[j] = dc(t + j), x[j] = X(t - W + 1 + j)
+    float w[2][W], dw[2][W], g[2][W], x[2][W];   // g[k][j] = dc(t + j), x[k][j] = X(t - W + 1 + j) of channel cc + k
 #pragma unroll
-    for (int i = 0; i < W; i++) { w[i] = convw[cc * W + i]; dw[i] = 0.f; }
-    long rb = (long)b * T1, sb = ((long)b * Cc + cc) * W;
-    auto DC = [&](int t) { return t < T1 ? toF(dc[(rb + t) * Cc + cc]) : 0.f; };
-    auto XX = [&](int t) { return t >= 0 ? toF(P[(rb + t) * NP + cc]) : (cs_in ? cs_in[sb + W + t] : 0.f); };
+    for (int k = 0; k < 2; k++)
+#pragma unroll
+        for (int i = 0; i < W; i++) { w[k][i] = convw[(cc + k) * W + i]; dw[k][i] = 0.f; }
+    long rb = (long)b * T1, sb0 = ((long)b * Cc + cc) * W;   // channel cc + k: conv state at sb0 + k * W
+    auto DC = [&](int t, float* o) {
+        if (t < T1) ldv<2>(dc + (rb + t) * Cc + cc, o);
+        else { o[0] = 0.f; o[1] = 0.f; }
+    };
+    auto XX = [&](int t, float* o) {
+        if (t >= 0) ldv<2>(P + (rb + t) * NP + cc, o);
+        else {
+#pragma unroll
+            for (int k = 0; k < 2; k++) o[k] = cs_in ? cs_in[sb0 + k * W + W + t] : 0.f;
+        }
+    };
     // gradient of the incoming conv state: entry s holds x(s - W)
-    if (dcs_in) {
+    if (dcs_in && blockIdx.y == 0) {
 #pragma unroll
         for (int s = 0; s < W; s++) {
             int tp = s - W;
-            float acc = 0.f;
+            float acc[2] = {0.f, 0.f}, v[2];
 #pragma unroll
-            for (int i = 0; i < W; i++) { int tt = tp + W - 1 - i; if (tt >= 0) acc += w[i] * DC(tt); }
+            for (int i = 0; i < W; i++) {
+                int tt = tp + W - 1 - i;
+                if (tt >= 0) { DC(tt, v); acc[0] += w[0][i] * v[0]; acc[1] += w[1][i] * v[1]; }
+            }
             int j = tp - (Pc - W);
-            if (dcs_out && j >= 0 && j < W) acc += dcs_out[sb + j];
-            dcs_in[sb + s] = acc;
+#pragma unroll
+            for (int k = 0; k < 2; k++) {
+                if (dcs_out && j >= 0 && j < W) acc[k] += dcs_out[sb0 + k * W + j];
+                dcs_in[sb0 + k * W + s] = acc[k];
+            }
         }
     }
 #pragma unroll
-    for (int j = 0; j < W; j++) { g[j] = DC(j); x[j] = XX(j - W + 1); }
-    for (int t = 0; t < T1; t++) {
-        float acc = 0.f;
+    for (int j = 0; j < W; j++) {
+        float v[2], u[2];
+        DC(t0 + j, v); XX(t0 + j - W + 1, u);
 #pragma unroll
-        for (int i = 0; i < W; i++) acc += w[i] * g[W - 1 - i];
+        for (int k = 0; k < 2; k++) { g[k][j] = v[k]; x[k][j] = u[k]; }
+    }
+    for (int t = t0; t < t1; t++) {
+        float acc[2];
+#pragma unroll
+        for (int k = 0; k < 2; k++) {
+            acc[k] = 0.f;
+#pragma unroll
+            for (int i = 0; i < W; i++) acc[k] += w[k][i] * g[k][W - 1 - i];
+        }
         int j = t - (Pc - W);
-        if (dcs_out && j >= 0 && j < W) acc += dcs_out[sb + j];
-        stX(dP + (rb + t) * NP + cc, acc);
+        if (dcs_out && j >= 0 && j < W) { acc[0] += dcs_out[sb0 + j]; acc[1] += dcs_out[sb0 + W + j]; }
+        stv<2>(dP + (rb + t) * NP + cc, acc);
+        float v[2], u[2];
+        DC(t + W, v); XX(t + 1, u);
 #pragma unroll
-        for (int i = 0; i < W; i++) dw[i] += g[0] * x[i];
+        for (int k = 0; k < 2; k++) {
 #pragma unroll
-        for (int i = 0; i < W - 1; i++) { g[i] = g[i + 1]; x[i] = x[i + 1]; }
-        g[W - 1] = DC(t + W);
-        x[W - 1] = XX(t + 1);
+            for (int i = 0; i < W; i++) dw[k][i] += g[k][0] * x[k][i];
+#pragma unroll
+            for (int i = 0; i < W - 1; i++) { g[k][i] = g[k][i + 1]; x[k][i] = x[k][i + 1]; }
+            g[k][W - 1] = v[k];
+            x[k][W - 1] = u[k];
+        }
     }
 #pragma unroll
-    for (int i = 0; i < W; i++) atomicAdd(dconvw + cc * W + i, dw[i]);
+    for (int k = 0; k < 2; k++)
+#pragma unroll
+        for (int i = 0; i < W; i++) atomicAdd(dconvw + (cc + k) * W + i, dw[k][i]);
 }
 
 // ---------------------------------------------------------------- gated output norm
@@ -2788,7 +2904,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
         float* gconv = GPG(c, PI(li, L_QC), PI(li, L_VC));
         float* junk = gconv ? gconv : BF(c, B_CSTMP, float, (long)s.B * d.Cc * d.W + (long)d.Cc * d.W);
         if (d.W != 4) armt_fail("conv_size must be 4");
-        dim3 g((d.Cc + 127) / 128, 1, s.B);
+        dim3 g((d.Cc / 2 + 127) / 128, (s.T1 + P2_TR - 1) / P2_TR, s.B);
         k_prep_bwd2<4><<<g, 128, 0, c->stream>>>(P, NP, dc, wcat, st_in->cs, dst->cs, dcs_tmp, dP, junk, s.B, s.T1, Pc, d.Cc);
         if (dst->cs) CK(cudaMemcpyAsync(dst->cs, dcs_tmp, (size_t)s.B * d.Cc * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
     }
