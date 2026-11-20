@@ -368,7 +368,7 @@ static float* GPG(Ctx* c, int i0, int i1) {
 // candidate's median counts; large shapes are also timed in bursts below the cap (see tune_gemm). The choice must not depend on timing noise (bf16 results differ slightly between algorithms,
 // and DDP ranks / repeated runs should compute the same thing), so it is made once per GPU model and cuBLAS version and
 // persisted: ARMT_GEMM_CACHE=<path prefix> (the Python side sets it next to the library) stores every choice in
-// <prefix>_<gpu>_<cublasLt version>_t3.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
+// <prefix>_<gpu>_<cublasLt version>_t4.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
 // read the first process's choice instead of tuning again. Plans are shared by every context of the process.
 // ARMT_GEMM_TUNE=0: always cublasGemmEx; 1: no exhaustive search; 2 (default): as above.
 // ARMT_GEMM_LOG=1: print each tuned shape's default and chosen time.
@@ -401,7 +401,7 @@ static void gemm_tune_init() {
         if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&pr, dev) == cudaSuccess) {
             std::string name = pr.name;
             for (char& ch : name) if (!isalnum((unsigned char)ch)) ch = '_';
-            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t3.txt";
+            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t4.txt";
         }
     }
 }
@@ -463,7 +463,19 @@ static GemmPlan* plan_desc(cublasOperation_t oa, cublasOperation_t ob, int M, in
 }
 
 struct LtCand { cublasLtMatmulAlgo_t algo; size_t ws; };
-static void lt_add(std::vector<LtCand>& v, const cublasLtMatmulAlgo_t& a, size_t ws) {
+// Split-k is kept for a bf16 / fp16 output only with the fp32 (compute type) reduction: the in-place and output-type
+// reductions sum the splits' partial results in the output type, i.e. round every split's sum to bf16 (the input
+// projection's dx flows through every layer: the bf16 gradients' error grew by ~20% with such kernels).
+static bool lt_precise(const cublasLtMatmulAlgo_t& a, cudaDataType tc) {
+    if (tc == CUDA_R_32F) return true;
+    uint32_t sk = 1, red = 0;
+    size_t sz = 0;
+    cublasLtMatmulAlgoConfigGetAttribute(&a, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &sk, sizeof(sk), &sz);
+    cublasLtMatmulAlgoConfigGetAttribute(&a, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &red, sizeof(red), &sz);
+    return sk <= 1 || red == CUBLASLT_REDUCTION_SCHEME_COMPUTE_TYPE;
+}
+static void lt_add(std::vector<LtCand>& v, const cublasLtMatmulAlgo_t& a, size_t ws, cudaDataType tc) {
+    if (!lt_precise(a, tc)) return;
     for (auto& x : v) if (!memcmp(&x.algo, &a, sizeof(a))) return;
     v.push_back({a, ws});
 }
@@ -475,7 +487,7 @@ static void shuffle(std::vector<int>& v) {   // deterministic (only the timing o
     }
 }
 // cuBLASLt's heuristic candidates. aA, aB: alignments (bytes) of cuBLASLt's A and B (= our B and A), aC: of C / D
-static void lt_heuristic(Ctx* c, GemmPlan* p, uint32_t aA, uint32_t aB, uint32_t aC, std::vector<LtCand>& v) {
+static void lt_heuristic(Ctx* c, GemmPlan* p, uint32_t aA, uint32_t aB, uint32_t aC, cudaDataType tc, std::vector<LtCand>& v) {
     cublasLtMatmulPreference_t pref;
     CB(cublasLtMatmulPreferenceCreate(&pref));
     uint64_t wsmax = LT_WS;
@@ -489,7 +501,7 @@ static void lt_heuristic(Ctx* c, GemmPlan* p, uint32_t aA, uint32_t aB, uint32_t
     if (cublasLtMatmulAlgoGetHeuristic(c->lt, p->op, p->la, p->lb, p->lc, p->lc, pref, LT_CAND, res, &n) != CUBLAS_STATUS_SUCCESS) n = 0;
     cublasLtMatmulPreferenceDestroy(pref);
     for (int i = 0; i < n; i++)
-        if (res[i].state == CUBLAS_STATUS_SUCCESS && res[i].workspaceSize <= LT_WS) lt_add(v, res[i].algo, res[i].workspaceSize);
+        if (res[i].state == CUBLAS_STATUS_SUCCESS && res[i].workspaceSize <= LT_WS) lt_add(v, res[i].algo, res[i].workspaceSize, tc);
 }
 // Exhaustive search: every configuration cuBLASLt accepts for the shape (algorithm x tile x stages x CTA swizzle x custom
 // option, without split-k), quick-timed (one call each, in random order, after an untimed call); then split-k x reduction
@@ -560,6 +572,7 @@ static void lt_exhaustive(Ctx* c, GemmPlan* p, cublasComputeType_t ct, cudaDataT
             for (uint32_t red : {(uint32_t)CUBLASLT_REDUCTION_SCHEME_INPLACE, (uint32_t)CUBLASLT_REDUCTION_SCHEME_COMPUTE_TYPE,
                                  (uint32_t)CUBLASLT_REDUCTION_SCHEME_OUTPUT_TYPE}) {
                 if (!(base[b].redmask & red)) continue;
+                if (tc != CUDA_R_32F && red != CUBLASLT_REDUCTION_SCHEME_COMPUTE_TYPE) continue;   // see lt_precise
                 cublasLtMatmulAlgo_t a = base[b].k.algo;
                 cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &k, 4);
                 cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &red, 4);
@@ -570,7 +583,7 @@ static void lt_exhaustive(Ctx* c, GemmPlan* p, cublasComputeType_t ct, cudaDataT
     qpass(sk);
     for (auto* cs : {&base, &sk})
         for (int i = 0; i < (int)cs->size() && i < keep; i++)
-            if ((*cs)[i].t < 1e29f) lt_add(v, (*cs)[i].k.algo, (*cs)[i].k.ws);
+            if ((*cs)[i].t < 1e29f) lt_add(v, (*cs)[i].k.algo, (*cs)[i].k.ws, tc);
 }
 
 // time the candidates for plan p's shape (see the comment above mm); al*: the alignments (bytes) of A, B, C
@@ -618,8 +631,8 @@ static GemmChoice tune_gemm(Ctx* c, GemmPlan* p, cublasOperation_t oa, cublasOpe
     // candidates (cuBLASLt's A / B are our B / A)
     std::vector<LtCand> v;
     uint32_t aLA = (uint32_t)alB, aLB = (uint32_t)alA, aC = (uint32_t)alC;
-    lt_heuristic(c, p, aLA, aLB, aC, v);
-    if (aLA > 4 || aLB > 4 || aC > 4) lt_heuristic(c, p, aLA < 4 ? aLA : 4, aLB < 4 ? aLB : 4, aC < 4 ? aC : 4, v);
+    lt_heuristic(c, p, aLA, aLB, aC, tc, v);
+    if (aLA > 4 || aLB > 4 || aC > 4) lt_heuristic(c, p, aLA < 4 ? aLA : 4, aLB < 4 ? aLB : 4, aC < 4 ? aC : 4, tc, v);
     double flop = 2.0 * M * N * K * batch;
     if (g_tune >= 2 && flop >= LT_EXH_FLOP) lt_exhaustive(c, p, ct, tb, ta, tc, aLA, aLB, aC, quick, v, 6, 6);
     // careful pass: index 0 = the default, i = v[i - 1]
@@ -1685,7 +1698,7 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
     // a thread's elements of a tile: column tx, rows 4 tseg .. 4 tseg + 3; the inputs are loaded one tile ahead (registers)
     static_assert(CH == 64 && DT == 16, "the tile mapping assumes 64 rows x 16 columns over 256 threads");
     const int tx = tid & 15, tseg = tid >> 4;
-    float* sTot = sL;                   // [16][16] row-group totals of the gc scan (in sL during the tile loop)
+    float* sTot = sL;                   // [TPC][16] part totals of the gc scan (in sL during the tile loop)
     float rq[4], rk[4], rb[4], rg[4];
     auto load_tile = [&](int d0) {
 #pragma unroll
@@ -1696,24 +1709,45 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
     };
     load_tile(0);
     for (int d0 = 0; d0 < KD; d0 += DT) {
-        // a. gc = cumsum(g) over the chunk rows: within the thread's 4 rows, then over the 16 row groups of the column
-        float v[4], run = 0.f;
+        // a. gc = cumsum(g) over the chunk rows, summed in the original kernel's order: sequentially within TPC parts of RPT
+        //    rows (one thread per (column, part), in registers), then the parts' totals. (A two-level 4-row scan rounds
+        //    differently, and that alone made the real model's bf16 gradients ~5% further from the fp32 model's.)
+        constexpr int TPC = 256 / KD, RPT = CH / TPC;   // KD 128: 2 parts of 32 rows ; KD 64: 4 of 16
+        float v[4];
 #pragma unroll
         for (int r = 0; r < 4; r++) {
             int c = 4 * tseg + r;
-            run += rg[r]; v[r] = run;
+            sgc[c * LDT + tx] = rg[r];
             sq[c * LDT + tx] = rq[r]; sk[c * LDT + tx] = rk[r]; sbk[c * LDT + tx] = rb[r] * rk[r];
         }
-        sTot[tseg * 16 + tx] = run;
         __syncthreads();
-        float off = 0.f;
-        for (int p = 0; p < tseg; p++) off += sTot[p * 16 + tx];
+        if (tid < 16 * TPC) {
+            const int cx = tid & 15, part = tid >> 4, r0 = part * RPT;
+            float run = 0.f;
 #pragma unroll
-        for (int r = 0; r < 4; r++) {
-            int c = 4 * tseg + r;
-            v[r] += off;
-            sgc[c * LDT + tx] = v[r];
-            if (gc) gc[base + (long)c * KD + d0 + tx] = v[r];
+            for (int q = 0; q < RPT; q += 8) {
+                float w8[8];
+#pragma unroll
+                for (int r = 0; r < 8; r++) w8[r] = sgc[(r0 + q + r) * LDT + cx];
+#pragma unroll
+                for (int r = 0; r < 8; r++) { run += w8[r]; w8[r] = run; }
+#pragma unroll
+                for (int r = 0; r < 8; r++) sgc[(r0 + q + r) * LDT + cx] = w8[r];
+            }
+            sTot[part * 16 + cx] = run;
+        }
+        __syncthreads();
+        {
+            const int part = (4 * tseg) / RPT;   // the thread's 4 rows lie in one part
+            float off = 0.f;
+            for (int p = 0; p < part; p++) off += sTot[p * 16 + tx];
+#pragma unroll
+            for (int r = 0; r < 4; r++) {
+                int c = 4 * tseg + r;
+                v[r] = sgc[c * LDT + tx] + off;
+                sgc[c * LDT + tx] = v[r];
+                if (gc) gc[base + (long)c * KD + d0 + tx] = v[r];
+            }
         }
         if (tseg == 15) { sgl[d0 + tx] = v[3]; gl[cid * KD + d0 + tx] = v[3]; }   // gl = the last row
         __syncthreads();
@@ -2031,7 +2065,16 @@ typedef __nv_bfloat16 bf16;
 #endif
 // bytes of the sSb / sV union
 template <int KD> __host__ __device__ constexpr int tc_ub() { return KD * TC_LDV * 2 > CH * TVS * 4 ? KD * TC_LDV * 2 : CH * TVS * 4; }
-template <int KD> __host__ __device__ constexpr int tc_smem() { return KD * TVS * 4 + tc_ub<KD>() + CH * (KD + 8) * 2 + CH * TC_LDV * 2 + TC_SPLIT_SMEM(KD); }
+template <int KD> __host__ __device__ constexpr int tc_smem() { return KD * TVS * 4 + tc_ub<KD>() + CH * (KD + 8) * 2 + CH * TC_LDV * 2 + TC_SPLIT_SMEM(KD) + 16 * 16 * 2; }
+// The vn / dvn products accumulate onto u / pre_dvn inside the tensor-core accumulator: the accumulator is seeded with
+// I u (one extra product with a 16 x 16 identity, exact) rather than computing the product from zero and adding u after
+// in fp32. Tensor-core fp32 accumulation is not IEEE (aligned and truncated), and the second order costs ~20% more error
+// in the real model's bf16 gradients (cancellation between u and W S; not visible with random kbench data).
+template <int KD> static __device__ __forceinline__ bf16* tc_eye(unsigned char* smraw) {   // the identity tile (last 512 B)
+    bf16* e = (bf16*)(smraw + tc_smem<KD>() - 16 * 16 * 2);
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) e[i] = __float2bfloat16(i / 16 == i % 16 ? 1.f : 0.f);
+    return e;
+}
 static_assert((CH / 16) * (TVS / 16) == 8, "one 16x16 tile of the 64 x TVS products per warp");
 // load a [CH][KD] bf16 chunk into smem with row stride KD+8 (optionally negated)
 template <int KD>
@@ -2082,15 +2125,16 @@ __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u
     const long bh = blockIdx.y;
     const int v0 = blockIdx.x * TVS, tid = threadIdx.x, warp = tid >> 5;
     for (int e = tid; e < KD * TVS; e += 256) { int k = e / TVS, vv = e % TVS; sS[e] = S_in ? S_in[bh * KD * VD + (long)k * VD + v0 + vv] : 0.f; }
-    constexpr int NL = CH * (KD / 8) / 256, NU = CH * TVS / 256;
-    uint4 rW[NL], rK[NL];   // the chunk's Wm, Kt and u, loaded one chunk ahead
-    bf16 ru[NU];
-    auto ld_u = [&](long cb_) {
-#pragma unroll
-        for (int j = 0; j < NU; j++) { int e = tid + 256 * j, c = e / TVS, vv = e % TVS; ru[j] = u[cb_ * CH * VD + (long)c * VD + v0 + vv]; }
-    };
+    bf16* sEye = tc_eye<KD>(smraw);
+    constexpr int NL = CH * (KD / 8) / 256;
+    const int tm = warp / (TVS / 16), tn = warp % (TVS / 16);   // the warp's 16 x 16 tile of vn
+    uint4 rW[NL], rK[NL];   // the chunk's Wm, Kt and (the warp's tile of) u, loaded one chunk ahead
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::row_major> fu;
+    auto ld_u = [&](long cb_) { wmma::load_matrix_sync(fu, u + cb_ * CH * VD + (long)16 * tm * VD + v0 + 16 * tn, VD); };
     if (nch > 0) { tc_ld_regs<KD>(rW, Wm + bh * nch * CH * KD); tc_ld_regs<KD>(rK, Kt + bh * nch * CH * KD); ld_u(bh * nch); }
     __syncthreads();
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> eye;
+    wmma::load_matrix_sync(eye, sEye, 16);
     for (int n = 0; n < nch; n++) {
         long cb = bh * nch + n;
         for (int e = tid; e < KD * TVS; e += 256) {
@@ -2108,10 +2152,11 @@ __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u
         tc_st_regs<KD>(sWK, rW, true);
         if (n + 1 < nch) tc_ld_regs<KD>(rW, Wm + (cb + 1) * CH * KD);
         __syncthreads();
-        {   // vn = u - Wm S: the product into a fragment (one tile per warp), stored over sSb once every warp is done with it
-            int m = warp / (TVS / 16), nn = warp % (TVS / 16);
+        {   // vn = u - Wm S (one tile per warp, accumulated onto u), stored over sSb once every warp is done with it
+            int m = tm, nn = tn;
             wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
             wmma::fill_fragment(acc, 0.f);
+            wmma::mma_sync(acc, eye, fu, acc);
 #pragma unroll
             for (int kk = 0; kk < KD / 16; kk++) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> a;
@@ -2128,14 +2173,13 @@ __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u
             wmma::store_matrix_sync(sV + 16 * m * TVS + 16 * nn, acc, TVS, wmma::mem_row_major);
         }
         __syncthreads();
-#pragma unroll
-        for (int j = 0; j < NU; j++) {
-            int e = tid + 256 * j, c = e / TVS, vv = e % TVS;
-            bf16 x = __float2bfloat16(sV[e] + __bfloat162float(ru[j]));
+        if (n + 1 < nch) ld_u(cb + 1);
+        for (int e = tid; e < CH * TVS; e += 256) {
+            int c = e / TVS, vv = e % TVS;
+            bf16 x = __float2bfloat16(sV[e]);
             sVb[c * TC_LDV + vv] = x;
             vn[cb * CH * VD + (long)c * VD + v0 + vv] = x;
         }
-        if (n + 1 < nch) ld_u(cb + 1);
         for (int e = tid; e < KD * TVS; e += 256) sS[e] *= EXPF(gl[cb * KD + (e / TVS)]);
         tc_st_regs<KD>(sWK, rK, false);
         if (n + 1 < nch) tc_ld_regs<KD>(rK, Kt + (cb + 1) * CH * KD);
@@ -2172,7 +2216,10 @@ __global__ void __launch_bounds__(256, 2) k_state_bwd(const bf16* __restrict__ p
     const long bh = blockIdx.y;
     const int v0 = blockIdx.x * TVS, tid = threadIdx.x, warp = tid >> 5;
     for (int e = tid; e < KD * TVS; e += 256) sS[e] = 0.f;
+    bf16* sEye = tc_eye<KD>(smraw);
     __syncthreads();
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> eye;
+    wmma::load_matrix_sync(eye, sEye, 16);
     for (int n = nch - 1; n >= 0; n--) {
         long cb = bh * nch + n;
         float p[PR];
@@ -2196,10 +2243,15 @@ __global__ void __launch_bounds__(256, 2) k_state_bwd(const bf16* __restrict__ p
         }
         tc_load_chunk<KD>(sWK, Kt + cb * CH * KD, false);
         __syncthreads();
-        {   // dvn = pre_dvn + Kt dS: the product into a fragment, stored over sSb once every warp is done with it
+        {   // dvn = pre_dvn + Kt dS (accumulated onto pre_dvn), stored over sSb once every warp is done with it
             int m = warp / (TVS / 16), nn = warp % (TVS / 16);
             wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
             wmma::fill_fragment(acc, 0.f);
+            {
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::row_major> fp;
+                wmma::load_matrix_sync(fp, pre_dvn + cb * CH * VD + (long)16 * m * VD + v0 + 16 * nn, VD);
+                wmma::mma_sync(acc, eye, fp, acc);
+            }
 #pragma unroll
             for (int kk = 0; kk < KD / 16; kk++) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> a;
@@ -2214,7 +2266,7 @@ __global__ void __launch_bounds__(256, 2) k_state_bwd(const bf16* __restrict__ p
         __syncthreads();
         for (int e = tid; e < CH * TVS; e += 256) {
             int c = e / TVS, vv = e % TVS;
-            float x = sV[e] + __bfloat162float(pre_dvn[cb * CH * VD + (long)c * VD + v0 + vv]);
+            float x = sV[e];
             dvn[cb * CH * VD + (long)c * VD + v0 + vv] = __float2bfloat16(x);
             sVb[c * TC_LDV + vv] = __float2bfloat16(-x);
         }
