@@ -283,7 +283,51 @@ typedef struct {
     int hy_active, hy_train, hy_np, hy_nw;
     int* hy_w;                // per piece: index among the pieces with memory tokens, or -1
     void* hy_args;            // a copy of the ArmtForwardArgs of armt_hy_begin
+    struct Prof* prof;        // ARMT_PROF=1: phase profiler (else NULL)
+    int prof_pass;            // 0 forward, 1 the backward's recompute, 2 backward
 } Ctx;
+
+// =============================================================================================== optional phase profiler
+// ARMT_PROF=1: GPU time per phase of a layer, cuBLAS included, separately for the forward, the backward's recompute and the
+// backward. Each prof_mark() records a CUDA event on the library's stream and starts a phase; the time up to the next mark
+// is charged to it. The events are summed at the end of every API call, which then synchronizes (profiling runs only).
+enum { PR_IDLE, PR_EMBED, PR_MEMREAD, PR_NORM1, PR_PROJ, PR_GATES, PR_PREP, PR_CONVST, PR_INTRA, PR_SG_A, PR_STATE, PR_SG_O,
+       PR_ONORM, PR_OPROJ, PR_NORM2, PR_MLP, PR_MEMWRITE, PR_HEAD, PR_SG_PRE, PR_SG_POST, PR_PREP1, PR_PREP2, PR_COPY, PR_COUNT };
+static const char* PR_NAME[PR_COUNT] = {
+    "idle / untracked", "embeddings", "memory read", "norm 1", "input projections", "gate projections (f2, g2)",
+    "token prep (conv, l2norm, gates)", "conv state", "scan: intra-chunk", "scan: GEMMs u = A wv, Wm = A y", "scan: state pass",
+    "scan: GEMMs o = Qg S0 + M vn", "gated output norm", "output projection", "norm 2", "MLP", "memory write", "final norm + loss",
+    "scan bwd: GEMMs M^T do, Qg^T do", "scan bwd: GEMMs after the state pass", "token prep bwd 1", "token prep bwd 2 (conv)",
+    "copies / memsets"};
+struct Prof {
+    std::vector<cudaEvent_t> ev;
+    std::vector<short> sec, pass;
+    size_t used = 0;
+    double ms[3][PR_COUNT] = {};
+};
+static void prof_mark(Ctx* c, int sec) {
+    Prof* p = c->prof;
+    if (!p) return;
+    if (p->used == p->ev.size()) {
+        cudaEvent_t e;
+        CK(cudaEventCreate(&e));
+        p->ev.push_back(e); p->sec.push_back(0); p->pass.push_back(0);
+    }
+    CK(cudaEventRecord(p->ev[p->used], c->stream));
+    p->sec[p->used] = (short)sec; p->pass[p->used] = (short)c->prof_pass; p->used++;
+}
+static void prof_flush(Ctx* c) {
+    Prof* p = c->prof;
+    if (!p || !p->used) return;
+    prof_mark(c, PR_IDLE);
+    CK(cudaEventSynchronize(p->ev[p->used - 1]));
+    for (size_t i = 0; i + 1 < p->used; i++) {
+        float ms = 0.f;
+        CK(cudaEventElapsedTime(&ms, p->ev[i], p->ev[i + 1]));
+        p->ms[p->pass[i]][p->sec[i]] += ms;
+    }
+    p->used = 0;
+}
 
 #define BF(c, id, T, n) ((T*)ensure(&(c)->buf[id], (size_t)(n) * sizeof(T)))
 
@@ -772,13 +816,15 @@ __global__ void k_dphi_add(float* dphi, const float* dden, const float* z, const
     float* p = dphi + (long)row * dkh * Hm + h * dkh;
     for (int f = lane; f < dkh; f += 32) p[f] += a * z[zo + f] + (coef ? cf * dz[zo + f] : 0.f);
 }
-// dz[b,h,:] += sum_m w[row, h] * phi[row, h, :] over the rows of sample b. block per (b, h).
+// dz[b,h,:] += sum_m w[row, h] * phi[row, h, :] over the rows of sample b. grid (B*Hm, row blocks of DZ_ROWS): partial sums
+// added atomically (a block per (b, h) alone left the GPU nearly idle over 1000+ rows)
+#define DZ_ROWS 64
 __global__ void k_dz_acc(float* dz, const float* w, const float* phi, int rpb, int dkh, int Hm) {
-    int b = blockIdx.x / Hm, h = blockIdx.x % Hm;
+    int b = blockIdx.x / Hm, h = blockIdx.x % Hm, m0 = blockIdx.y * DZ_ROWS, m1 = min(rpb, m0 + DZ_ROWS);
     for (int f = threadIdx.x; f < dkh; f += blockDim.x) {
         float acc = 0.f;
-        for (int m = 0; m < rpb; m++) { long row = (long)b * rpb + m; acc += w[row * Hm + h] * phi[row * dkh * Hm + h * dkh + f]; }
-        dz[((long)b * Hm + h) * dkh + f] += acc;
+        for (int m = m0; m < m1; m++) { long row = (long)b * rpb + m; acc += w[row * Hm + h] * phi[row * dkh * Hm + h * dkh + f]; }
+        atomicAdd(dz + ((long)b * Hm + h) * dkh + f, acc);
     }
 }
 // write: coef (empty memory -> 1) and z_new = z_old + sum_m coef*phik. block per (b, h).
@@ -1295,9 +1341,14 @@ __global__ void k_ce(T* logits, int V, int rpb, long ld_b, long off, int roff, c
 #define DT 16
 #define LDL 68
 #define LDO 24
-#define K1_TILES (4 * CH * (DT + 1) + (int)((2 * 48 * LDO + 96 * LDO) * sizeof(floatS) / 4))
+#define LDT 20   // row stride (floats) of the forward's tile arrays: 16-byte rows for vector loads
+#define K1_TILES (4 * CH * LDT + (int)((2 * 48 * LDO + 96 * LDO) * sizeof(floatS) / 4))
 #define K1_POST (CH * LDL + 3 * SB * (SB + 1))
-#define K1_SMEM (CH * LDL + (K1_TILES > K1_POST ? K1_TILES : K1_POST) + 256)
+#define K1_SMEM (CH * LDL + (K1_TILES > K1_POST ? K1_TILES : K1_POST))
+#ifdef INTRA_TIMING
+__device__ long long* intra_timing;
+__device__ long long* intra_timing_b;
+#endif
 template <int KD>
 __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__ cq, const floatS* __restrict__ ck,
                                                       const float* __restrict__ cg, const floatS* __restrict__ cb,
@@ -1306,80 +1357,128 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
     extern __shared__ __align__(16) float sm[];
     float* sL = sm;                       // [CH][LDL]
     float* un = sL + CH * LDL;            // union: d-tiles | sM | (sA + sT)
-    float* sq = un; float* sk = sq + CH * (DT + 1); float* sbk = sk + CH * (DT + 1); float* sgc = sbk + CH * (DT + 1);
-    floatS* sQh = (floatS*)(sgc + CH * (DT + 1));   // [48][LDO] rows 16..63: q_i e^{gc_i - gc_r(I)}
+    float* sq = un; float* sk = sq + CH * LDT; float* sbk = sk + CH * LDT; float* sgc = sbk + CH * LDT;   // [CH][LDT] tiles
+    floatS* sQh = (floatS*)(sgc + CH * LDT);        // [48][LDO] rows 16..63: q_i e^{gc_i - gc_r(I)}
     floatS* sBh = sQh + 48 * LDO;                   // [48][LDO] same with b k
     floatS* sKr = sBh + 48 * LDO;                   // [96][LDO] k_j e^{gc_r(I) - gc_j}, rows 8 I (I - 1) + j (I = 1..3, j < 16 I)
     float* sM = un;                                 // [CH][LDL] after the tile loop
     float* sA = un; float* sT = sA + CH * LDL;      // after M is written out
-    float* sgl = sm + K1_SMEM - 256;
+    float* sgl = sL + 256;                          // [KD] gl, in sL during the tile loop (sL is filled only after it)
     const long cid = blockIdx.x, base = cid * CH * KD;
     const int tid = threadIdx.x;
-    // 1. gc = cumsum(g) over the chunk rows (256/KD threads per column)
-    {
-        constexpr int TPC = 256 / KD, RPT = CH / TPC;
-        int d = tid % KD, part = tid / KD;
-        float s = 0.f, loc[RPT];
-#pragma unroll
-        for (int r = 0; r < RPT; r++) { s += cg[base + (part * RPT + r) * KD + d]; loc[r] = s; }
-        sL[part * KD + d] = s;
-        __syncthreads();
-        float off = 0.f;
-        for (int p = 0; p < part; p++) off += sL[p * KD + d];
-#pragma unroll
-        for (int r = 0; r < RPT; r++) gc[base + (part * RPT + r) * KD + d] = loc[r] + off;
-        if (part == TPC - 1) { sgl[d] = loc[RPT - 1] + off; gl[cid * KD + d] = loc[RPT - 1] + off; }
-        __syncthreads();
+#ifdef INTRA_TIMING   // development: clock64 per section, thread 0 of every block -> intra_timing[block][section]
+    long long t_mark = clock64(), t_start = t_mark, t_scan = 0, t_load = 0, t_ops = 0, t_pair = 0;
+#endif
+    // 2. pairwise sums, over tiles of DT columns
+    // diagonal 16x16 blocks, exact: their 4 x 136 (i, j <= i) pairs, 2 or 3 per thread (pairs tid, tid + 256, tid + 512)
+    constexpr int NDP = 4 * 136;
+    int pi_[3], pj_[3], np_ = 0;
+    for (int p = tid; p < NDP; p += 256) {
+        int Ib = p / 136, q = p % 136, ii = 0;
+        while ((ii + 1) * (ii + 2) / 2 <= q) ii++;
+        pi_[np_] = 16 * Ib + ii; pj_[np_] = 16 * Ib + q - ii * (ii + 1) / 2; np_++;
     }
-    // 2. pairwise sums
-    // diagonal blocks: thread -> (block I, row rr, column group jg): columns j = jg + 4 q (q < 4) of the block
-    const int dI = tid >> 6, drr = (tid >> 2) & 15, djg = tid & 3, di = 16 * dI + drr;
-    float dLa[4] = {}, dMa[4] = {};
+    float dLa[3] = {}, dMa[3] = {};
 #ifndef SCAN32
     // off-diagonal blocks: 12 (pair, matrix) jobs on tensor cores; warp w does jobs w and w + 8
     const int warp = tid >> 5;
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> facc[2];
     wmma::fill_fragment(facc[0], 0.f); wmma::fill_fragment(facc[1], 0.f);
-
 #else
     // fp32 build: off-diagonal on CUDA cores. thread -> (pair p = tid / 43 ..) simple mapping: row i, column block J < I
     const int i = tid >> 2, J = tid & 3, I = i >> 4;
     float aL[SB] = {}, aM[SB] = {};
 #endif
-    for (int d0 = 0; d0 < KD; d0 += DT) {
-        for (int e = tid; e < CH * DT; e += 256) {
-            int c = e / DT, x = e % DT;
-            long g_ = base + c * KD + d0 + x;
-            float q = toF(cq[g_]), k = toF(ck[g_]), b = toF(cb[g_]), g = gc[g_];
-            sq[c * (DT + 1) + x] = q; sk[c * (DT + 1) + x] = k; sbk[c * (DT + 1) + x] = b * k; sgc[c * (DT + 1) + x] = g;
-            float eg = EXPF(g);
-            stX(y + g_, b * k * eg); stX(Qg + g_, q * eg); stX(Kt + g_, k * EXPF(sgl[d0 + x] - g));
+    // a thread's elements of a tile: column tx, rows 4 tseg .. 4 tseg + 3; the inputs are loaded one tile ahead (registers)
+    static_assert(CH == 64 && DT == 16, "the tile mapping assumes 64 rows x 16 columns over 256 threads");
+    const int tx = tid & 15, tseg = tid >> 4;
+    float* sTot = sL;                   // [16][16] row-group totals of the gc scan (in sL during the tile loop)
+    float rq[4], rk[4], rb[4], rg[4];
+    auto load_tile = [&](int d0) {
+#pragma unroll
+        for (int r = 0; r < 4; r++) {
+            long g_ = base + (long)(4 * tseg + r) * KD + d0 + tx;
+            rq[r] = toF(cq[g_]); rk[r] = toF(ck[g_]); rb[r] = toF(cb[g_]); rg[r] = cg[g_];
         }
+    };
+    load_tile(0);
+    for (int d0 = 0; d0 < KD; d0 += DT) {
+        // a. gc = cumsum(g) over the chunk rows: within the thread's 4 rows, then over the 16 row groups of the column
+        float v[4], run = 0.f;
+#pragma unroll
+        for (int r = 0; r < 4; r++) {
+            int c = 4 * tseg + r;
+            run += rg[r]; v[r] = run;
+            sq[c * LDT + tx] = rq[r]; sk[c * LDT + tx] = rk[r]; sbk[c * LDT + tx] = rb[r] * rk[r];
+        }
+        sTot[tseg * 16 + tx] = run;
         __syncthreads();
-        for (int e = tid; e < 96 * DT; e += 256) {
-            int row = e / DT, x = e % DT;
+        float off = 0.f;
+        for (int p = 0; p < tseg; p++) off += sTot[p * 16 + tx];
+#pragma unroll
+        for (int r = 0; r < 4; r++) {
+            int c = 4 * tseg + r;
+            v[r] += off;
+            sgc[c * LDT + tx] = v[r];
+            if (gc) gc[base + (long)c * KD + d0 + tx] = v[r];
+        }
+        if (tseg == 15) { sgl[d0 + tx] = v[3]; gl[cid * KD + d0 + tx] = v[3]; }   // gl = the last row
+        __syncthreads();
+#ifdef INTRA_TIMING
+        if (tid == 0) t_scan += clock64() - t_mark; t_mark = clock64();
+#endif
+        // b. y = b k e^gc, Qg = q e^gc, Kt = k e^{gl - gc}, from the thread's own registers
+        {
+            float glx = sgl[d0 + tx];
+#pragma unroll
+            for (int r = 0; r < 4; r++) {
+                long g_ = base + (long)(4 * tseg + r) * KD + d0 + tx;
+                float eg = EXPF(v[r]);
+                stX(y + g_, rb[r] * rk[r] * eg); stX(Qg + g_, rq[r] * eg); stX(Kt + g_, rk[r] * EXPF(glx - v[r]));
+            }
+        }
+        if (d0 + DT < KD) load_tile(d0 + DT);   // the next tile's loads go out (in flight during c and d)
+#ifdef INTRA_TIMING
+        if (tid == 0) t_load += clock64() - t_mark; t_mark = clock64();
+#endif
+        // c. decayed operands of the off-diagonal products (4 consecutive columns per item)
+        for (int e = tid; e < 96 * (DT / 4); e += 256) {
+            int row = e / (DT / 4), x0 = 4 * (e % (DT / 4));
             int Ir = row < 16 ? 1 : (row < 48 ? 2 : 3), j = row - 8 * Ir * (Ir - 1);
-            float gr = sgc[(16 * Ir - 1) * (DT + 1) + x];
-            stX(sKr + row * LDO + x, sk[j * (DT + 1) + x] * EXPF(gr - sgc[j * (DT + 1) + x]));
+            float gr[4], gj[4], kj[4], o[4];
+            ldv<4>(sgc + (16 * Ir - 1) * LDT + x0, gr); ldv<4>(sgc + j * LDT + x0, gj); ldv<4>(sk + j * LDT + x0, kj);
+#pragma unroll
+            for (int u = 0; u < 4; u++) o[u] = kj[u] * EXPF(gr[u] - gj[u]);
+            stv<4>(sKr + row * LDO + x0, o);
             if (row < 48) {
                 int ir = 16 + row, Ii = ir >> 4;
-                float ef = EXPF(sgc[ir * (DT + 1) + x] - sgc[(16 * Ii - 1) * (DT + 1) + x]);
-                stX(sQh + row * LDO + x, sq[ir * (DT + 1) + x] * ef);
-                stX(sBh + row * LDO + x, sbk[ir * (DT + 1) + x] * ef);
+                float gi[4], g0[4], qi[4], bi[4], oq[4], ob[4];
+                ldv<4>(sgc + ir * LDT + x0, gi); ldv<4>(sgc + (16 * Ii - 1) * LDT + x0, g0);
+                ldv<4>(sq + ir * LDT + x0, qi); ldv<4>(sbk + ir * LDT + x0, bi);
+#pragma unroll
+                for (int u = 0; u < 4; u++) { float ef = EXPF(gi[u] - g0[u]); oq[u] = qi[u] * ef; ob[u] = bi[u] * ef; }
+                stv<4>(sQh + row * LDO + x0, oq); stv<4>(sBh + row * LDO + x0, ob);
             }
         }
         __syncthreads();
-        // diagonal blocks (exact)
-#pragma unroll 4
-        for (int x = 0; x < DT; x++) {
-            float gi = sgc[di * (DT + 1) + x], qi = sq[di * (DT + 1) + x], bi = sbk[di * (DT + 1) + x];
+#ifdef INTRA_TIMING
+        if (tid == 0) t_ops += clock64() - t_mark; t_mark = clock64();
+#endif
+        // d. diagonal blocks (exact pairwise decays) and the off-diagonal products
 #pragma unroll
-            for (int q = 0; q < 4; q++) {
-                int jj = djg + 4 * q;
-                if (jj <= drr) {
-                    int j = 16 * dI + jj;
-                    float k = sk[j * (DT + 1) + x] * EXPF(gi - sgc[j * (DT + 1) + x]);
-                    dLa[q] += bi * k; dMa[q] += qi * k;
+        for (int n = 0; n < 3; n++) {
+            if (n < np_) {
+                const float* gi = sgc + pi_[n] * LDT; const float* qi = sq + pi_[n] * LDT; const float* bi = sbk + pi_[n] * LDT;
+                const float* gj = sgc + pj_[n] * LDT; const float* kj = sk + pj_[n] * LDT;
+#pragma unroll
+                for (int x0 = 0; x0 < DT; x0 += 4) {
+                    float a[4], b[4], k4[4], q4[4], bb[4];
+                    ldv<4>(gi + x0, a); ldv<4>(gj + x0, b); ldv<4>(kj + x0, k4); ldv<4>(qi + x0, q4); ldv<4>(bi + x0, bb);
+#pragma unroll
+                    for (int u = 0; u < 4; u++) {
+                        float k = k4[u] * EXPF(a[u] - b[u]);
+                        dLa[n] += bb[u] * k; dMa[n] += q4[u] * k;
+                    }
                 }
             }
         }
@@ -1408,6 +1507,9 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
         }
 #endif
         __syncthreads();
+#ifdef INTRA_TIMING
+        if (tid == 0) t_pair += clock64() - t_mark; t_mark = clock64();
+#endif
     }
     // 3. assemble L (sL) and M (sM -> global): zero, off-diagonal blocks, diagonal blocks
     for (int e = tid; e < CH * LDL; e += 256) { sL[e] = 0.f; sM[e] = 0.f; }
@@ -1426,10 +1528,11 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
         for (int jj = 0; jj < SB; jj++) { sL[i * LDL + 16 * J + jj] = aL[jj]; sM[i * LDL + 16 * J + jj] = aM[jj]; }
 #endif
 #pragma unroll
-    for (int q = 0; q < 4; q++) {
-        int jj = djg + 4 * q, j = 16 * dI + jj;
-        if (jj < drr) sL[di * LDL + j] = dLa[q];
-        if (jj <= drr) sM[di * LDL + j] = dMa[q];
+    for (int n = 0; n < 3; n++) {
+        if (n < np_) {
+            if (pj_[n] < pi_[n]) sL[pi_[n] * LDL + pj_[n]] = dLa[n];
+            sM[pi_[n] * LDL + pj_[n]] = dMa[n];
+        }
     }
     __syncthreads();
     floatS* Mo = Mm + cid * CH * CH;
@@ -1437,6 +1540,9 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
     __syncthreads();
     for (int e = tid; e < CH * LDL; e += 256) sA[e] = 0.f;
     __syncthreads();
+#ifdef INTRA_TIMING
+    long long t_asm = clock64() - t_mark; t_mark = clock64();
+#endif
     // 4a. diagonal blocks: column c of A_II by forward substitution (one thread per (I, c))
     if (tid < 64) {
         int Ib = tid >> 4, c = tid & 15, o = 16 * Ib;
@@ -1454,6 +1560,9 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
         for (int r = 0; r < SB; r++) sA[(o + r) * LDL + o + c] = col[r];
     }
     __syncthreads();
+#ifdef INTRA_TIMING
+    long long t_inv1 = clock64() - t_mark; t_mark = clock64();
+#endif
     // 4b. off-diagonal blocks by distance: A_IJ = -A_II sum_{K=J}^{I-1} L_IK A_KJ
     for (int dist = 1; dist < 4; dist++) {
         int nb = 4 - dist;
@@ -1475,12 +1584,21 @@ __global__ void __launch_bounds__(256, 2) k_intra_fwd(const floatS* __restrict__
         }
         __syncthreads();
     }
-    float* Ao = Am + cid * CH * CH;
-    for (int e = tid; e < CH * CH; e += 256) {
+#ifdef INTRA_TIMING
+    long long t_inv2 = clock64() - t_mark; t_mark = clock64();
+#endif
+    for (int e = tid; e < CH * CH; e += 256) {   // A: fp32 for the backward (Am != NULL), the GEMMs' floatS copy
         float v = sA[(e / CH) * LDL + e % CH];
-        Ao[e] = v;
+        if (Am) Am[cid * CH * CH + e] = v;
         if (AmX) stX(AmX + cid * CH * CH + e, v);
     }
+#ifdef INTRA_TIMING
+    __syncthreads();
+    if (tid == 0 && intra_timing) {
+        long long* o = intra_timing + cid * 8;
+        o[0] = t_scan; o[1] = t_load; o[2] = t_ops; o[3] = t_pair; o[4] = t_asm; o[5] = t_inv1; o[6] = t_inv2; o[7] = clock64() - t_start;
+    }
+#endif
 }
 
 #ifdef SCAN32
@@ -1602,8 +1720,9 @@ __global__ void __launch_bounds__(256) k_state_bwd(const float* __restrict__ pre
 }
 #else
 // sequential state passes on tensor cores (bf16 build): bf16 operands, fp32 accumulation, the state itself stays fp32.
-// grid (B*H, KD/32), block 256 (8 warps). smem: sS f32 [KD][32] | sSb bf16 [KD][40] | sWK bf16 [CH][KD+8] | sV f32 [CH][32] |
-// sVb bf16 [CH][40]
+// grid (KD/TVS, B*H): the KD/TVS blocks of one (b, h) are consecutive, so they run together and share the chunk loads in L2.
+// block 256 (8 warps), 2 blocks per SM. smem: sS f32 [KD][TVS] | sSb bf16 [KD][TVS+8], aliased by sV f32 [CH][TVS] once the
+// product that reads sSb is done | sWK bf16 [CH][KD+8] | sVb bf16 [CH][TVS+8]
 typedef __nv_bfloat16 bf16;
 #ifndef TVS
 #define TVS 32      // state columns per block
@@ -1617,8 +1736,10 @@ typedef __nv_bfloat16 bf16;
 #else
 #define TC_SPLIT_SMEM(KD) 0
 #endif
-template <int KD> constexpr int tc_smem() { return KD * TVS * 4 + KD * TC_LDV * 2 + CH * (KD + 8) * 2 + CH * TVS * 4 + CH * TC_LDV * 2
-                                                   + TC_SPLIT_SMEM(KD); }
+// bytes of the sSb / sV union
+template <int KD> __host__ __device__ constexpr int tc_ub() { return KD * TC_LDV * 2 > CH * TVS * 4 ? KD * TC_LDV * 2 : CH * TVS * 4; }
+template <int KD> __host__ __device__ constexpr int tc_smem() { return KD * TVS * 4 + tc_ub<KD>() + CH * (KD + 8) * 2 + CH * TC_LDV * 2 + TC_SPLIT_SMEM(KD); }
+static_assert((CH / 16) * (TVS / 16) == 8, "one 16x16 tile of the 64 x TVS products per warp");
 // load a [CH][KD] bf16 chunk into smem with row stride KD+8 (optionally negated)
 template <int KD>
 static __device__ __forceinline__ void tc_load_chunk(bf16* dst, const bf16* src, bool neg) {
@@ -1635,17 +1756,17 @@ static __device__ __forceinline__ void tc_load_chunk(bf16* dst, const bf16* src,
     }
 }
 template <int KD>
-__global__ void __launch_bounds__(256) k_state_fwd(const bf16* __restrict__ u, const bf16* __restrict__ Wm, const bf16* __restrict__ Kt,
-                                                   const float* __restrict__ gl, bf16* __restrict__ S0, bf16* __restrict__ S0lo,
-                                                   bf16* __restrict__ vn,
-                                                   const float* __restrict__ S_in, float* __restrict__ S_out, int ncarry, int nch) {
+__global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u, const bf16* __restrict__ Wm, const bf16* __restrict__ Kt,
+                                                      const float* __restrict__ gl, bf16* __restrict__ S0, bf16* __restrict__ S0lo,
+                                                      bf16* __restrict__ vn,
+                                                      const float* __restrict__ S_in, float* __restrict__ S_out, int ncarry, int nch) {
     // with ARMT_SPLIT_STATE the state enters the products as hi + lo (two bf16 parts, ~fp32 accuracy)
     extern __shared__ __align__(16) unsigned char smraw[];
     constexpr int LDK = KD + 8, VD = KD;
-    float* sS = (float*)smraw; bf16* sSb = (bf16*)(sS + KD * TVS); bf16* sWK = sSb + KD * TC_LDV;
-    float* sV = (float*)(sWK + CH * LDK); bf16* sVb = (bf16*)(sV + CH * TVS); bf16* sSl = sVb + CH * TC_LDV;
-    const long bh = blockIdx.x;
-    const int v0 = blockIdx.y * TVS, tid = threadIdx.x, warp = tid >> 5;
+    float* sS = (float*)smraw; bf16* sSb = (bf16*)(sS + KD * TVS); bf16* sWK = (bf16*)((unsigned char*)sSb + tc_ub<KD>());
+    float* sV = (float*)sSb; bf16* sVb = sWK + CH * LDK; bf16* sSl = sVb + CH * TC_LDV;
+    const long bh = blockIdx.y;
+    const int v0 = blockIdx.x * TVS, tid = threadIdx.x, warp = tid >> 5;
     for (int e = tid; e < KD * TVS; e += 256) { int k = e / TVS, vv = e % TVS; sS[e] = S_in ? S_in[bh * KD * VD + (long)k * VD + v0 + vv] : 0.f; }
     __syncthreads();
     for (int n = 0; n < nch; n++) {
@@ -1663,12 +1784,11 @@ __global__ void __launch_bounds__(256) k_state_fwd(const bf16* __restrict__ u, c
 #endif
         }
         tc_load_chunk<KD>(sWK, Wm + cb * CH * KD, true);
-        for (int e = tid; e < CH * TVS; e += 256) { int c = e / TVS, vv = e % TVS; sV[e] = __bfloat162float(u[cb * CH * VD + (long)c * VD + v0 + vv]); }
         __syncthreads();
-        for (int tile = warp; tile < (CH / 16) * (TVS / 16); tile += 8) {   // vn = u - Wm S
-            int m = tile / (TVS / 16), nn = tile % (TVS / 16);
+        {   // vn = u - Wm S: the product into a fragment (one tile per warp), stored over sSb once every warp is done with it
+            int m = warp / (TVS / 16), nn = warp % (TVS / 16);
             wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
-            wmma::load_matrix_sync(acc, sV + 16 * m * TVS + 16 * nn, TVS, wmma::mem_row_major);
+            wmma::fill_fragment(acc, 0.f);
 #pragma unroll
             for (int kk = 0; kk < KD / 16; kk++) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> a;
@@ -1681,12 +1801,13 @@ __global__ void __launch_bounds__(256) k_state_fwd(const bf16* __restrict__ u, c
                 wmma::mma_sync(acc, a, b, acc);
 #endif
             }
+            __syncthreads();
             wmma::store_matrix_sync(sV + 16 * m * TVS + 16 * nn, acc, TVS, wmma::mem_row_major);
         }
         __syncthreads();
         for (int e = tid; e < CH * TVS; e += 256) {
             int c = e / TVS, vv = e % TVS;
-            bf16 x = __float2bfloat16(sV[e]);
+            bf16 x = __float2bfloat16(sV[e] + __bfloat162float(u[cb * CH * VD + (long)c * VD + v0 + vv]));
             sVb[c * TC_LDV + vv] = x;
             vn[cb * CH * VD + (long)c * VD + v0 + vv] = x;
         }
@@ -1715,15 +1836,15 @@ __global__ void __launch_bounds__(256) k_state_fwd(const bf16* __restrict__ u, c
 }
 // reverse pass: dvn = pre_dvn + Kt dS ; dS <- e^{gl} dS + pre_dS - Wm^T dvn. dSe: in pre_dS (Qg^T do), out dS at chunk ends.
 template <int KD>
-__global__ void __launch_bounds__(256) k_state_bwd(const bf16* __restrict__ pre_dvn, bf16* dvn, bf16* dSe,
-                                                   const bf16* __restrict__ Kt, const bf16* __restrict__ Wm, const float* __restrict__ gl,
-                                                   const float* dS_out, int ncarry, float* dS_in, int nch) {
+__global__ void __launch_bounds__(256, 2) k_state_bwd(const bf16* __restrict__ pre_dvn, bf16* dvn, bf16* dSe,
+                                                      const bf16* __restrict__ Kt, const bf16* __restrict__ Wm, const float* __restrict__ gl,
+                                                      const float* dS_out, int ncarry, float* dS_in, int nch) {
     extern __shared__ __align__(16) unsigned char smraw[];
     constexpr int LDK = KD + 8, VD = KD, PR = KD * TVS / 256;
-    float* sS = (float*)smraw; bf16* sSb = (bf16*)(sS + KD * TVS); bf16* sWK = sSb + KD * TC_LDV;
-    float* sV = (float*)(sWK + CH * LDK); bf16* sVb = (bf16*)(sV + CH * TVS);
-    const long bh = blockIdx.x;
-    const int v0 = blockIdx.y * TVS, tid = threadIdx.x, warp = tid >> 5;
+    float* sS = (float*)smraw; bf16* sSb = (bf16*)(sS + KD * TVS); bf16* sWK = (bf16*)((unsigned char*)sSb + tc_ub<KD>());
+    float* sV = (float*)sSb; bf16* sVb = sWK + CH * LDK;
+    const long bh = blockIdx.y;
+    const int v0 = blockIdx.x * TVS, tid = threadIdx.x, warp = tid >> 5;
     for (int e = tid; e < KD * TVS; e += 256) sS[e] = 0.f;
     __syncthreads();
     for (int n = nch - 1; n >= 0; n--) {
@@ -1748,12 +1869,11 @@ __global__ void __launch_bounds__(256) k_state_bwd(const bf16* __restrict__ pre_
             sSb[k * TC_LDV + vv] = xb;
         }
         tc_load_chunk<KD>(sWK, Kt + cb * CH * KD, false);
-        for (int e = tid; e < CH * TVS; e += 256) { int c = e / TVS, vv = e % TVS; sV[e] = __bfloat162float(pre_dvn[cb * CH * VD + (long)c * VD + v0 + vv]); }
         __syncthreads();
-        for (int tile = warp; tile < (CH / 16) * (TVS / 16); tile += 8) {   // dvn = pre_dvn + Kt dS
-            int m = tile / (TVS / 16), nn = tile % (TVS / 16);
+        {   // dvn = pre_dvn + Kt dS: the product into a fragment, stored over sSb once every warp is done with it
+            int m = warp / (TVS / 16), nn = warp % (TVS / 16);
             wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
-            wmma::load_matrix_sync(acc, sV + 16 * m * TVS + 16 * nn, TVS, wmma::mem_row_major);
+            wmma::fill_fragment(acc, 0.f);
 #pragma unroll
             for (int kk = 0; kk < KD / 16; kk++) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> a;
@@ -1762,12 +1882,13 @@ __global__ void __launch_bounds__(256) k_state_bwd(const bf16* __restrict__ pre_
                 wmma::load_matrix_sync(b, sSb + 16 * kk * TC_LDV + 16 * nn, TC_LDV);
                 wmma::mma_sync(acc, a, b, acc);
             }
+            __syncthreads();
             wmma::store_matrix_sync(sV + 16 * m * TVS + 16 * nn, acc, TVS, wmma::mem_row_major);
         }
         __syncthreads();
         for (int e = tid; e < CH * TVS; e += 256) {
             int c = e / TVS, vv = e % TVS;
-            float x = sV[e];
+            float x = sV[e] + __bfloat162float(pre_dvn[cb * CH * VD + (long)c * VD + v0 + vv]);
             dvn[cb * CH * VD + (long)c * VD + v0 + vv] = __float2bfloat16(x);
             sVb[c * TC_LDV + vv] = __float2bfloat16(-x);
         }
@@ -1799,7 +1920,8 @@ __global__ void __launch_bounds__(256) k_state_bwd(const bf16* __restrict__ pre_
 // 16x16 blocks factored through a midpoint (never > 1): row side (sums over j < i) through r(I) = 16 I - 1 like the forward,
 // column side (sums over i > j) through s(J) = 16 J + 15. Diagonal blocks exact (fp32).
 #define B1_LD 72
-#define B1_SMEM_BYTES (2 * CH * B1_LD * 2 + 2 * 4 * 16 * 17 * 4 + 5 * CH * (DT + 1) * 4 + 4 * CH * 20 * 4 + KD_MAX_B1 * 4)
+#define LDB 16   // row stride of the backward's tile arrays: unpadded, every warp access below is row-contiguous
+#define B1_SMEM_BYTES (2 * CH * B1_LD * 2 + 2 * 4 * 16 * 17 * 4 + 5 * CH * LDB * 4 + 4 * CH * 20 * 4 + KD_MAX_B1 * 4)
 #define KD_MAX_B1 128
 template <int KD>
 __global__ void __launch_bounds__(512) k_intra_bwd(const floatS* __restrict__ cq, const floatS* __restrict__ ck, const floatS* __restrict__ cb,
@@ -1814,15 +1936,21 @@ __global__ void __launch_bounds__(512) k_intra_bwd(const floatS* __restrict__ cq
     bf16* sdMb = sdLb + CH * B1_LD;                     // [CH][72] masked dM (bf16)
     float* sdLd = (float*)(sdMb + CH * B1_LD);          // [4][16][17] diagonal blocks of dL (fp32)
     float* sdMd = sdLd + 4 * 16 * 17;
-    float* sq = sdMd + 4 * 16 * 17; float* sk = sq + CH * (DT + 1); float* sbk = sk + CH * (DT + 1); float* sgc = sbk + CH * (DT + 1);
-    float* sdgc = sgc + CH * (DT + 1);
-    float* sOut = sdgc + CH * (DT + 1);                 // [4][CH][20]: dqM_off, dbkL_off (rows 16..), dkL_off, dkM_off (rows ..47)
+    float* sq = sdMd + 4 * 16 * 17; float* sk = sq + CH * LDB; float* sbk = sk + CH * LDB; float* sgc = sbk + CH * LDB;
+    float* sdgc = sgc + CH * LDB;
+    float* sOut = sdgc + CH * LDB;                 // [4][CH][20]: dqM_off, dbkL_off (rows 16..), dkL_off, dkM_off (rows ..47)
     bf16* sKr = (bf16*)sOut;                            // operands alias sOut (used before the products are stored)
     bf16* sQs = sKr + 96 * LDO; bf16* sBs = sQs + 96 * LDO;
     float* sdgl = sOut + 4 * CH * 20;
     const int VD = KD;
     const long cid = blockIdx.x, base = cid * CH * KD;
     const int tid = threadIdx.x, lane = tid & 31, wl = tid >> 5;
+#ifdef INTRA_TIMING
+    long long t_mark = clock64(), t_start = t_mark, tb[8] = {};
+#define TB(k) if (tid == 0) { long long t_ = clock64(); tb[k] += t_ - t_mark; t_mark = t_; }
+#else
+#define TB(k)
+#endif
     for (int d = wl; d < KD; d += 16) {     // dgl = e^{gl} rowsum(S0 dSe) + colsum(dKt Kt)
         const floatS* s0 = S0 + cid * KD * VD + (long)d * VD;
         const floatS* ds = dSe + cid * KD * VD + (long)d * VD;
@@ -1832,7 +1960,8 @@ __global__ void __launch_bounds__(512) k_intra_bwd(const floatS* __restrict__ cq
         if (lane == 0) sdgl[d] = EXPF(gl[cid * KD + d]) * a;
     }
     __syncthreads();
-    if (tid < KD) {
+    TB(0)
+    if (tid < KD) {   // (runs alongside the staging below)
         float a = 0.f;
         for (int c = 0; c < CH; c++) a += toF(dKt[base + c * KD + tid]) * toF(Kt[base + c * KD + tid]);
         sdgl[tid] += a;
@@ -1846,27 +1975,32 @@ __global__ void __launch_bounds__(512) k_intra_bwd(const floatS* __restrict__ cq
         if ((a >> 4) == (c >> 4)) { int o = (a >> 4) * 272 + (a & 15) * 17 + (c & 15); sdLd[o] = l; sdMd[o] = m; }
     }
     __syncthreads();
+    TB(1)
     const int warp = wl;
     // jobs (k-steps): 0-3: col J=0 dkL, col J=0 dkM, row I=3 dqM, row I=3 dbkL (3) ; 4-7: J=1 / I=2 (2) ; 8-11: J=2 / I=1 (1)
     for (int d0 = 0; d0 < KD; d0 += DT) {
-        for (int e = tid; e < CH * DT; e += 512) {
-            int c = e / DT, x = e % DT;
-            long g_ = base + c * KD + d0 + x;
-            float k = toF(ck[g_]);
-            sq[c * (DT + 1) + x] = toF(cq[g_]); sk[c * (DT + 1) + x] = k; sbk[c * (DT + 1) + x] = toF(cb[g_]) * k;
-            sgc[c * (DT + 1) + x] = gc[g_];
+        {   // tile loads: thread -> (row c, columns x0, x0 + 1)
+            static_assert(CH * DT == 2 * 512, "two tile elements per thread");
+            int c = tid >> 3, x0 = 2 * (tid & 7);
+            long g_ = base + c * KD + d0 + x0;
+            float q2[2], k2[2], b2[2], g2[2];
+            ldv<2>(cq + g_, q2); ldv<2>(ck + g_, k2); ldv<2>(cb + g_, b2); ldv<2>(gc + g_, g2);
+            float bk2[2] = {b2[0] * k2[0], b2[1] * k2[1]};
+            stv<2>(sq + c * LDB + x0, q2); stv<2>(sk + c * LDB + x0, k2); stv<2>(sbk + c * LDB + x0, bk2); stv<2>(sgc + c * LDB + x0, g2);
         }
         __syncthreads();
+        TB(2)
         for (int e = tid; e < 96 * DT; e += 512) {
             int row = e / DT, x = e % DT;
             int Ir = row < 16 ? 1 : (row < 48 ? 2 : 3), j = row - 8 * Ir * (Ir - 1);
-            stX(sKr + row * LDO + x, sk[j * (DT + 1) + x] * EXPF(sgc[(16 * Ir - 1) * (DT + 1) + x] - sgc[j * (DT + 1) + x]));
+            stX(sKr + row * LDO + x, sk[j * LDB + x] * EXPF(sgc[(16 * Ir - 1) * LDB + x] - sgc[j * LDB + x]));
             int Jc = row < 48 ? 0 : (row < 80 ? 1 : 2), i = 16 * (Jc + 1) + row - (Jc == 0 ? 0 : (Jc == 1 ? 48 : 80));
-            float ef = EXPF(sgc[i * (DT + 1) + x] - sgc[(16 * Jc + 15) * (DT + 1) + x]);
-            stX(sQs + row * LDO + x, sq[i * (DT + 1) + x] * ef);
-            stX(sBs + row * LDO + x, sbk[i * (DT + 1) + x] * ef);
+            float ef = EXPF(sgc[i * LDB + x] - sgc[(16 * Jc + 15) * LDB + x]);
+            stX(sQs + row * LDO + x, sq[i * LDB + x] * ef);
+            stX(sBs + row * LDO + x, sbk[i * LDB + x] * ef);
         }
         __syncthreads();
+        TB(3)
         wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
         const bool has_job = warp < 12;
         if (has_job) {
@@ -1903,47 +2037,74 @@ __global__ void __launch_bounds__(512) k_intra_bwd(const floatS* __restrict__ cq
             wmma::store_matrix_sync(sOut + out * CH * 20 + row0 * 20, acc, 20, wmma::mem_row_major);
         }
         __syncthreads();
-        for (int e = tid; e < CH * DT; e += 512) {
-            int c = e / DT, dd = e % DT, B_ = c >> 4, cc = c & 15;
-            float gci = sgc[c * (DT + 1) + dd];
-            float dqM = 0.f, dbkL = 0.f, dkL = 0.f, dkM = 0.f;
+        TB(4)
+        {   // per-element outputs: thread -> (row c, columns dd0, dd0 + 1); paired loads / stores, the old arithmetic order
+            int c = tid >> 3, dd0 = 2 * (tid & 7), B_ = c >> 4, cc = c & 15;
+            float gci[2], dqM[2] = {}, dbkL[2] = {}, dkL[2] = {}, dkM[2] = {};
+            ldv<2>(sgc + c * LDB + dd0, gci);
             if (B_ > 0) {
-                float f = EXPF(gci - sgc[(16 * B_ - 1) * (DT + 1) + dd]);
-                dqM = sOut[0 * CH * 20 + c * 20 + dd] * f; dbkL = sOut[1 * CH * 20 + c * 20 + dd] * f;
+                float g0[2], o0[2], o1[2];
+                ldv<2>(sgc + (16 * B_ - 1) * LDB + dd0, g0); ldv<2>(sOut + 0 * CH * 20 + c * 20 + dd0, o0); ldv<2>(sOut + 1 * CH * 20 + c * 20 + dd0, o1);
+#pragma unroll
+                for (int u = 0; u < 2; u++) { float f = EXPF(gci[u] - g0[u]); dqM[u] = o0[u] * f; dbkL[u] = o1[u] * f; }
             }
             if (B_ < 3) {
-                float f = EXPF(sgc[(16 * B_ + 15) * (DT + 1) + dd] - gci);
-                dkL = sOut[2 * CH * 20 + c * 20 + dd] * f; dkM = sOut[3 * CH * 20 + c * 20 + dd] * f;
+                float g1[2], o2[2], o3[2];
+                ldv<2>(sgc + (16 * B_ + 15) * LDB + dd0, g1); ldv<2>(sOut + 2 * CH * 20 + c * 20 + dd0, o2); ldv<2>(sOut + 3 * CH * 20 + c * 20 + dd0, o3);
+#pragma unroll
+                for (int u = 0; u < 2; u++) { float f = EXPF(g1[u] - gci[u]); dkL[u] = o2[u] * f; dkM[u] = o3[u] * f; }
             }
             const float* Ld = sdLd + B_ * 272; const float* Md = sdMd + B_ * 272;
             for (int jj = 0; jj <= cc; jj++) {          // diagonal block, row side
                 int j = 16 * B_ + jj;
-                float kj = sk[j * (DT + 1) + dd] * EXPF(gci - sgc[j * (DT + 1) + dd]);
-                dqM += Md[cc * 17 + jj] * kj; dbkL += Ld[cc * 17 + jj] * kj;
+                float kj[2], gj[2];
+                ldv<2>(sk + j * LDB + dd0, kj); ldv<2>(sgc + j * LDB + dd0, gj);
+                float md = Md[cc * 17 + jj], ld = Ld[cc * 17 + jj];
+#pragma unroll
+                for (int u = 0; u < 2; u++) { float k = kj[u] * EXPF(gci[u] - gj[u]); dqM[u] += md * k; dbkL[u] += ld * k; }
             }
             for (int ii = cc; ii < 16; ii++) {          // diagonal block, column side
                 int i = 16 * B_ + ii;
-                float e2 = EXPF(sgc[i * (DT + 1) + dd] - gci);
-                dkL += Ld[ii * 17 + cc] * sbk[i * (DT + 1) + dd] * e2;
-                dkM += Md[ii * 17 + cc] * sq[i * (DT + 1) + dd] * e2;
+                float gi[2], bi[2], qi[2];
+                ldv<2>(sgc + i * LDB + dd0, gi); ldv<2>(sbk + i * LDB + dd0, bi); ldv<2>(sq + i * LDB + dd0, qi);
+                float ld = Ld[ii * 17 + cc], md = Md[ii * 17 + cc];
+#pragma unroll
+                for (int u = 0; u < 2; u++) { float e2 = EXPF(gi[u] - gci[u]); dkL[u] += ld * bi[u] * e2; dkM[u] += md * qi[u] * e2; }
             }
-            long g_ = base + c * KD + d0 + dd;
-            float q = sq[c * (DT + 1) + dd], k = sk[c * (DT + 1) + dd], bk = sbk[c * (DT + 1) + dd], b = toF(cb[g_]), eg = EXPF(gci);
-            float dQ = toF(dQg[g_]), dK = toF(dKt[g_]), dY = toF(dy[g_]);
-            stX(dq + g_, dqM + dQ * eg);
-            stX(dk + g_, dkL + dkM + dK * EXPF(gl[cid * KD + d0 + dd] - gci) + dY * b * eg + dbkL * b);
-            stX(db + g_, dY * k * eg + dbkL * k);
-            float dgcv = bk * dbkL - k * dkL + q * dqM - k * dkM + dQ * toF(Qg[g_]) - dK * toF(Kt[g_]) + dY * toF(y[g_]);
-            if (c == CH - 1) dgcv += sdgl[d0 + dd];
-            sdgc[c * (DT + 1) + dd] = dgcv;
+            long g_ = base + c * KD + d0 + dd0;
+            float q2[2], k2[2], bk2[2], b2[2], dQ2[2], dK2[2], dY2[2], Qg2[2], Kt2[2], y2[2], gl2[2];
+            ldv<2>(sq + c * LDB + dd0, q2); ldv<2>(sk + c * LDB + dd0, k2); ldv<2>(sbk + c * LDB + dd0, bk2);
+            ldv<2>(cb + g_, b2); ldv<2>(dQg + g_, dQ2); ldv<2>(dKt + g_, dK2); ldv<2>(dy + g_, dY2);
+            ldv<2>(Qg + g_, Qg2); ldv<2>(Kt + g_, Kt2); ldv<2>(y + g_, y2); ldv<2>(gl + cid * KD + d0 + dd0, gl2);
+            float oq[2], ok[2], ob[2], odg[2];
+#pragma unroll
+            for (int u = 0; u < 2; u++) {
+                float eg = EXPF(gci[u]);
+                oq[u] = dqM[u] + dQ2[u] * eg;
+                ok[u] = dkL[u] + dkM[u] + dK2[u] * EXPF(gl2[u] - gci[u]) + dY2[u] * b2[u] * eg + dbkL[u] * b2[u];
+                ob[u] = dY2[u] * k2[u] * eg + dbkL[u] * k2[u];
+                odg[u] = bk2[u] * dbkL[u] - k2[u] * dkL[u] + q2[u] * dqM[u] - k2[u] * dkM[u] + dQ2[u] * Qg2[u] - dK2[u] * Kt2[u] + dY2[u] * y2[u];
+                if (c == CH - 1) odg[u] += sdgl[d0 + dd0 + u];
+            }
+            stv<2>(dq + g_, oq); stv<2>(dk + g_, ok); stv<2>(db + g_, ob); stv<2>(sdgc + c * LDB + dd0, odg);
         }
         __syncthreads();
-        if (tid < DT) {
-            float s = 0.f;
-            for (int c = CH - 1; c >= 0; c--) { s += sdgc[c * (DT + 1) + tid]; stX(dg + base + c * KD + d0 + tid, s); }
+        TB(5)
+        if (tid < DT) {   // dg = reverse cumsum of dgc over the chunk rows
+            float s_ = 0.f;
+            for (int c = CH - 1; c >= 0; c--) { s_ += sdgc[c * LDB + tid]; stX(dg + base + c * KD + d0 + tid, s_); }
         }
         __syncthreads();
+        TB(6)
     }
+#ifdef INTRA_TIMING
+    if (tid == 0 && intra_timing_b) {
+        long long* o = intra_timing_b + cid * 8;
+        for (int k = 0; k < 7; k++) o[k] = tb[k];
+        o[7] = clock64() - t_start;
+    }
+#endif
+#undef TB
 }
 #else
 // intra-chunk backward. grid = chunks, block 256, dyn smem (2*CH*65 + 5*CH*33 + KD) floats
@@ -2062,12 +2223,15 @@ template <int KD> static void set_smem_attrs() {
     CK(cudaFuncSetAttribute(k_intra_fwd<KD>, cudaFuncAttributeMaxDynamicSharedMemorySize, K1_SMEM * 4));
     CK(cudaFuncSetAttribute(k_state_fwd<KD>, cudaFuncAttributeMaxDynamicSharedMemorySize, ST_SMEM(KD)));
     CK(cudaFuncSetAttribute(k_state_bwd<KD>, cudaFuncAttributeMaxDynamicSharedMemorySize, ST_SMEM(KD)));
+    CK(cudaFuncSetAttribute(k_state_fwd<KD>, cudaFuncAttributePreferredSharedMemoryCarveout, 100));   // 2 blocks per SM
+    CK(cudaFuncSetAttribute(k_state_bwd<KD>, cudaFuncAttributePreferredSharedMemoryCarveout, 100));
     CK(cudaFuncSetAttribute(k_intra_bwd<KD>, cudaFuncAttributeMaxDynamicSharedMemorySize, B1_SMEM_BYTES));
 }
 #define SC CUDA_S
 // chunk-major scan inputs come from k_prep_fwd (B_CQ, B_CK, B_CB, B_CWV: floatS ; B_CG: fp32)
+// keep: also produce what only the backward reads (gc, the fp32 A); a forward-only call (training forward, inference) skips it
 template <int KD>
-static void scan_fwd(Ctx* c, const Step& s, const float* S_in, float* S_out, int ncarry) {
+static void scan_fwd(Ctx* c, const Step& s, const float* S_in, float* S_out, int ncarry, bool keep) {
     set_smem_attrs<KD>();
     long CSK = s.nchB * CH * KD, CSC = s.nchB * CH * CH;
     floatS *cq = BF(c, B_CQ, floatS, CSK), *ck = BF(c, B_CK, floatS, CSK), *cb = BF(c, B_CB, floatS, CSK), *cwv = BF(c, B_CWV, floatS, CSK);
@@ -2084,19 +2248,28 @@ static void scan_fwd(Ctx* c, const Step& s, const float* S_in, float* S_out, int
 #endif
     int nb = (int)s.nchB;
     long long sK = CH * KD, sC = CH * CH, sS = (long long)KD * KD;
-    k_intra_fwd<KD><<<nb, 256, K1_SMEM * 4, c->stream>>>(cq, ck, cg, cb, gc, y, Qg, Kt, Am, AmW, Mm, gl);
+    prof_mark(c, PR_INTRA);
+#ifdef SCAN32
+    float* Akeep = Am;              // the GEMMs read the fp32 A
+#else
+    float* Akeep = keep ? Am : NULL;
+#endif
+    k_intra_fwd<KD><<<nb, 256, K1_SMEM * 4, c->stream>>>(cq, ck, cg, cb, keep ? gc : NULL, y, Qg, Kt, Akeep, AmW, Mm, gl);
+    prof_mark(c, PR_SG_A);
     mm(c, 0, 0, CH, KD, CH, 1.f, AmX, SC, CH, sC, cwv, SC, KD, sK, 0.f, u, SC, KD, sK, nb);     // u = A wv
     mm(c, 0, 0, CH, KD, CH, 1.f, AmX, SC, CH, sC, y, SC, KD, sK, 0.f, Wm, SC, KD, sK, nb);      // Wm = A y
 #ifdef SCAN32
     dim3 g((unsigned)(s.B * c->d.H), KD / 32);
 #else
-    dim3 g((unsigned)(s.B * c->d.H), KD / TVS);
+    dim3 g(KD / TVS, (unsigned)(s.B * c->d.H));
 #endif
 #ifdef SCAN32
     k_state_fwd<KD><<<g, 256, ST_SMEM(KD), c->stream>>>(u, Wm, Kt, gl, S0, vn, S_in, S_out, ncarry, s.nch);
     mm(c, 0, 0, CH, KD, KD, 1.f, Qg, SC, KD, sK, S0, SC, KD, sS, 0.f, o, SC, KD, sK, nb);       // o = Qg S0
 #elif !defined(ARMT_SPLIT_STATE)
+    prof_mark(c, PR_STATE);
     k_state_fwd<KD><<<g, 256, ST_SMEM(KD), c->stream>>>(u, Wm, Kt, gl, S0, NULL, vn, S_in, S_out, ncarry, s.nch);
+    prof_mark(c, PR_SG_O);
     mm(c, 0, 0, CH, KD, KD, 1.f, Qg, SC, KD, sK, S0, SC, KD, sS, 0.f, o, SC, KD, sK, nb);       // o = Qg S0
 #else
     floatS* S0lo = BF(c, B_S0LO, floatS, s.nchB * KD * KD);
@@ -2132,14 +2305,17 @@ static void scan_bwd(Ctx* c, const Step& s, const float* dS_out, float* dS_in, i
     floatS *dwv = BF(c, B_DWV, floatS, CSK), *dq = BF(c, B_DQ, floatS, CSK), *dk = BF(c, B_DK, floatS, CSK), *db = BF(c, B_DB, floatS, CSK);
     floatS* dg = BF(c, B_DG, floatS, CSK);
     long long sK = CH * KD, sC = CH * CH, sS = (long long)KD * KD;
+    prof_mark(c, PR_SG_PRE);
     mm(c, 1, 0, CH, KD, CH, 1.f, Mm, SC, CH, sC, dO, SC, KD, sK, 0.f, pre_dvn, SC, KD, sK, nb);  // pre_dvn = M^T do
     mm(c, 1, 0, KD, KD, CH, 1.f, Qg, SC, KD, sK, dO, SC, KD, sK, 0.f, dSe, SC, KD, sS, nb);      // pre_dS = Qg^T do
 #ifdef SCAN32
     dim3 g((unsigned)(s.B * c->d.H), KD / 32);
 #else
-    dim3 g((unsigned)(s.B * c->d.H), KD / TVS);
+    dim3 g(KD / TVS, (unsigned)(s.B * c->d.H));
 #endif
+    prof_mark(c, PR_STATE);
     k_state_bwd<KD><<<g, 256, ST_SMEM(KD), c->stream>>>(pre_dvn, dvn, dSe, Kt, Wm, gl, dS_out, ncarry, dS_in, s.nch);
+    prof_mark(c, PR_SG_POST);
     mm(c, 0, 1, CH, KD, KD, 1.f, dO, SC, KD, sK, S0, SC, KD, sS, 0.f, dQg, SC, KD, sK, nb);     // dQg = do S0^T
     mm(c, 0, 1, CH, KD, KD, 1.f, vn, SC, KD, sK, dSe, SC, KD, sS, 0.f, dKt, SC, KD, sK, nb);    // dKt = vn dSe^T
     mm(c, 0, 1, CH, KD, KD, -1.f, dvn, SC, KD, sK, S0, SC, KD, sS, 0.f, dWm, SC, KD, sK, nb);    // dWm = -dvn S0^T
@@ -2155,6 +2331,7 @@ static void scan_bwd(Ctx* c, const Step& s, const float* dS_out, float* dS_in, i
 #else
     const int b1_threads = 512;
 #endif
+    prof_mark(c, PR_INTRA);
     k_intra_bwd<KD><<<nb, b1_threads, B1_SMEM_BYTES, c->stream>>>(cq, ck, cb, gc, Qg, Kt, y, dL, dM, dQg, dKt, dy, S0, dSe, gl,
                                                                                  dq, dk, db, dg);
 }
@@ -2171,9 +2348,11 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
     int D = d.D, N = s.N, NP = d.NP, KDt = d.KDt, VDt = d.VDt, Hv = d.Hv, F = d.F;
     float eps = d.c.norm_eps;
     bool mem = d.has_mem[li];
+    c->prof_pass = recomp ? 1 : 0;
     float *xr = BF(c, B_XR, float, (long)N * D), *rstd1 = BF(c, B_RSTD1, float, N);
     floatX* h1 = BF(c, B_H1, floatX, (long)N * D);
     // 1. memory read + norm_1
+    prof_mark(c, mem ? PR_MEMREAD : PR_NORM1);
     if (mem) {
         float *mq = BF(c, B_MQ, float, (long)N * d.dm), *phiq = BF(c, B_PHIQ, float, (long)N * d.dk), *denq = BF(c, B_DENQ, float, (long)N * d.Hm);
         float* numq = BF(c, B_NUMQ, float, (long)N * D);
@@ -2184,6 +2363,7 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
         for (int h = 0; h < d.Hm; h++)   // num[b] = phi[b] W[b]
             mm(c, 0, 0, s.T1, dvh, dkh, 1.f, phiq + h * dkh, F32, d.dk, (long long)s.T1 * d.dk, st_in->Wm + (long)h * dkh * dvh, F32, dvh,
                (long long)d.dk * D / d.Hm, 0.f, numq + h * dvh, F32, D, (long long)s.T1 * D, s.B);
+        prof_mark(c, PR_NORM1);
         k_rmsnorm<<<N, 256, 0, c->stream>>>(xr, x, NULL, numq, denq, d.Hm, h1, rstd1, PP(c, PI(li, L_N1)), D, eps, 1, 1, d.woff);
     } else {
         CK(cudaMemcpyAsync(xr, x, (size_t)N * D * 4, cudaMemcpyDeviceToDevice, c->stream));
@@ -2191,8 +2371,10 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
     }
     // 2. projections
     floatX *P = BF(c, B_P, floatX, (long)N * NP), *fb = BF(c, B_FB, floatX, (long)N * KDt), *gg = BF(c, B_GG, floatX, (long)N * VDt);
+    prof_mark(c, PR_PROJ);
     lin(c, P, NP, h1, D, c->w_in[li], N, NP, D, 0.f);
     int of1 = 3 * KDt + 2 * VDt, og1 = of1 + Hv;
+    prof_mark(c, PR_GATES);
     if (!d.sg) {   // GDN-2: low-rank gate input and output gate (Qwen3.5: a and z come straight out of P)
         lin(c, fb, KDt, P + of1, NP, c->w_f2[li], N, KDt, Hv, 0.f);
         lin(c, gg, VDt, P + og1, NP, c->w_g2[li], N, VDt, Hv, 0.f);
@@ -2208,6 +2390,7 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
     if (d.W != 4) armt_fail("conv_size must be 4");
     long nwarps = s.nchB * CH / 8;   // runs of 8 positions (CH is a multiple of 8)
     unsigned npb = (unsigned)((nwarps + 7) / 8);
+    prof_mark(c, PR_PREP);
     if (d.sg)
         k_prep_fwd<KD, true><<<npb, 256, 0, c->stream>>>(P, NP, NULL, wq, wk, wv, st_in->cs, PP(c, PI(li, L_ALOG)), PP(c, PI(li, L_DTB)),
                                                           cq, ck, cg, cb, cwv, s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD),
@@ -2218,26 +2401,31 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
                                                            0, 0);
     int Pc = (s.Tm == 0 || d.c.mem_in_stream) ? s.T1 : s.Tr;
     int ncarry = (s.Tm == 0 || d.c.mem_in_stream) ? s.nch : s.nr;
+    prof_mark(c, PR_CONVST);
     if (st_out && st_out->cs) {
         float* tmp = BF(c, B_CSTMP, float, (long)s.B * d.Cc * d.W);
         LAUNCH1D(k_conv_state, (long)s.B * d.Cc * d.W, tmp, st_in->cs, P, NP, s.B, s.T1, Pc, d.Cc, d.W);
         CK(cudaMemcpyAsync(st_out->cs, tmp, (size_t)s.B * d.Cc * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
     }
     // 4. scan
-    scan_fwd<KD>(c, s, st_in->S, st_out ? st_out->S : NULL, ncarry);
+    scan_fwd<KD>(c, s, st_in->S, st_out ? st_out->S : NULL, ncarry, recomp);
     // 5. gated norm, o_proj, residual + norm_2
     floatX *on = BF(c, B_ON, floatX, (long)N * VDt), *ao = BF(c, B_AO, floatX, (long)N * D);
     float* rstdo = BF(c, B_RSTDO, float, (long)N * d.H);
     long nw2 = (long)N * d.H;
+    prof_mark(c, PR_ONORM);
     k_onorm_fwd<KD><<<(unsigned)((nw2 + 7) / 8), 256, 0, c->stream>>>(BF(c, B_O, floatS, CSK), d.sg ? P + d.oz : gg,
                                                                      d.sg ? NULL : PP(c, PI(li, L_G2B)), PP(c, PI(li, L_ON)), on, rstdo,
                                                                      s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, eps, d.c.gate_swish, d.sg ? NP : VDt);
+    prof_mark(c, PR_OPROJ);
     lin(c, ao, D, on, VDt, c->w_o[li], N, D, VDt, 0.f);
     float *xmid = BF(c, B_XMID, float, (long)N * D), *rstd2 = BF(c, B_RSTD2, float, N);
     floatX* h2 = BF(c, B_H2, floatX, (long)N * D);
+    prof_mark(c, PR_NORM2);
     k_rmsnorm<<<N, 256, 0, c->stream>>>(xmid, xr, ao, NULL, NULL, 1, h2, rstd2, PP(c, PI(li, L_N2)), D, eps, 1, 1, d.woff);
     // 6. MLP
     floatX *a = BF(c, B_A, floatX, (long)N * 2 * F), *m = BF(c, B_MM, floatX, (long)N * F), *mo = BF(c, B_MO, floatX, (long)N * D);
+    prof_mark(c, PR_MLP);
     lin(c, a, 2 * F, h2, D, c->w_12[li], N, 2 * F, D, 0.f);
     LAUNCH1D(k_swiglu, (long)N * F, m, a, (long)N, F);
     bool write = mem && s.Tm > 0 && st_out && st_out->Wm;
@@ -2246,6 +2434,7 @@ static void layer_fwd(Ctx* c, int li, const Step& s, const float* x, float* xo, 
         LAUNCH1D(k_resid, (long)N * D, xo, xmid, mo, (long)N * D);
     }
     // 7. memory write from the memory tokens' outputs
+    prof_mark(c, PR_MEMWRITE);
     if (write) {
         int BM = s.BM, dkh = d.dk / d.Hm, dvh = D / d.Hm;
         float *xm = BF(c, B_XM, float, (long)BM * D), *mk = BF(c, B_MK, float, (long)BM * d.dm), *phik = BF(c, B_PHIK, float, (long)BM * d.dk);
@@ -2291,7 +2480,9 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
     bool mem = d.has_mem[li];
     int dkh = d.dk / d.Hm, dvh = D / d.Hm;
     int rb_blocks = 2 * c->sms;
+    c->prof_pass = 2;
     // ---- memory write backward
+    prof_mark(c, PR_MEMWRITE);
     if (mem && s.Tm > 0) {
         int BM = s.BM;
         float *xm = BF(c, B_XM, float, (long)BM * D), *phik = BF(c, B_PHIK, float, (long)BM * d.dk), *denk = BF(c, B_DENK, float, (long)BM * d.Hm);
@@ -2319,7 +2510,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
         }
         // dphik += ddenk z_old + coef dz_new ; dz_old += sum ddenk phik  (dz_new == dz_old buffer: coef term first)
         k_dphi_add<<<(BM * d.Hm + 7) / 8, 256, 0, c->stream>>>(dphik, ddenk, st_in->z, coef, dst->z, BM, s.Tm, dkh, d.Hm);
-        k_dz_acc<<<s.B * d.Hm, 256, 0, c->stream>>>(dst->z, ddenk, phik, s.Tm, dkh, d.Hm);
+        k_dz_acc<<<dim3(s.B * d.Hm, (s.Tm + DZ_ROWS - 1) / DZ_ROWS), 256, 0, c->stream>>>(dst->z, ddenk, phik, s.Tm, dkh, d.Hm);
         k_dpfp_bwd<<<(BM * d.Hm + 7) / 8, 256, 8 * dkh * 4, c->stream>>>(mk, d.dm, dphik, dmk, d.dm, BM, d.dm, d.Hm);
         lin32_dx(c, dxm, D, dmk, d.dm, PP(c, PI(li, L_MK)), BM, d.dm, D, 0.f);
         lin32_dx(c, dxm, D, dnmv, D, PP(c, PI(li, L_MV)), BM, D, D, 1.f);
@@ -2331,6 +2522,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
         k_scatter_add_mem<<<BM, 256, 0, c->stream>>>(dx, dxm, s.Tr, s.Tm, D);
     }
     // ---- MLP backward
+    prof_mark(c, PR_MLP);
     floatX* dxX;
 #ifdef ARMT_FP32
     dxX = dx;
@@ -2346,8 +2538,10 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
     lin_dx(c, dh2, D, da, 2 * F, c->w_12[li], N, 2 * F, D, 0.f);
     lin_dw(c, GPG(c, PI(li, L_W1), PI(li, L_W2)), da, 2 * F, h2, D, N, 2 * F, D);
     float *xmid = BF(c, B_XMID, float, (long)N * D), *rstd2 = BF(c, B_RSTD2, float, N);
+    prof_mark(c, PR_NORM2);
     k_rmsnorm_bwd<<<rb_blocks, 256, D * 4, c->stream>>>(dx, dh2, xmid, rstd2, PP(c, PI(li, L_N2)), GP(c, PI(li, L_N2)), N, D, 1, 1, d.woff);
     // ---- attention backward
+    prof_mark(c, PR_OPROJ);
 #ifndef ARMT_FP32
     LAUNCH1D(k_cast, (long)N * D, dxX, dx, (long)N * D);
 #endif
@@ -2359,6 +2553,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
     lin_dw(c, GP(c, PI(li, L_O)), dxX, D, on, VDt, N, D, VDt);
     long CSK = s.nchB * CH * KD;
     floatS* dO = BF(c, B_DO, floatS, CSK);
+    prof_mark(c, PR_ONORM);
     {
         int per = 512;
         dim3 g(d.H, (unsigned)(((long)s.B * s.nch * CH + per - 1) / per));
@@ -2371,6 +2566,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
                                                  d.sg ? NP : VDt);
     }
     int of1 = 3 * KDt + 2 * VDt, og1 = of1 + Hv;
+    prof_mark(c, PR_GATES);
     if (!d.sg) {
         lin_dx(c, dP + og1, NP, dgg, VDt, c->w_g2[li], N, VDt, Hv, 0.f);
         lin_dw(c, GP(c, PI(li, L_G2)), dgg, VDt, P + og1, NP, N, VDt, Hv);
@@ -2379,6 +2575,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
     int ncarry = (s.Tm == 0 || d.c.mem_in_stream) ? s.nch : s.nr;
     scan_bwd<KD>(c, s, dst->S, dst->S, ncarry);
     floatS* dc = BF(c, B_DC, floatS, (long)N * d.Cc);
+    prof_mark(c, PR_PREP1);
     {
         int rpb = 64;
         dim3 g(d.H, (N + rpb - 1) / rpb);
@@ -2398,10 +2595,12 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
                                                               gq, gk, gb, gG, gwv, dc, dP, df, gA ? gA : junk, gdt ? gdt : junk,
                                                               s.B, s.Tr, s.Tm, d.H, s.nr, s.nch, d.W, 1.f / sqrtf((float)KD), rpb, 0, 0);
     }
+    prof_mark(c, PR_GATES);
     if (!d.sg) {
         lin_dx(c, dP + of1, NP, df, KDt, c->w_f2[li], N, KDt, Hv, 0.f);
         lin_dw(c, GP(c, PI(li, L_F2)), df, KDt, P + of1, NP, N, KDt, Hv);
     }
+    prof_mark(c, PR_PREP2);
     {
         // conv weights: q, k, v live in separate tensors; their grads are contiguous (L_QC, L_KC, L_VC adjacent in the layout).
         // the kernel wants one [Cc][W] weight array: stage a contiguous copy
@@ -2421,11 +2620,14 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
         k_prep_bwd2<4><<<g, 128, 0, c->stream>>>(P, NP, dc, wcat, st_in->cs, dst->cs, dcs_tmp, dP, junk, s.B, s.T1, Pc, d.Cc);
         if (dst->cs) CK(cudaMemcpyAsync(dst->cs, dcs_tmp, (size_t)s.B * d.Cc * d.W * 4, cudaMemcpyDeviceToDevice, c->stream));
     }
+    prof_mark(c, PR_PROJ);
     lin_dx(c, dh1, D, dP, NP, c->w_in[li], N, NP, D, 0.f);
     lin_dw(c, GPG(c, PI(li, L_Q), PI(li, L_G1)), dP, NP, h1, D, N, NP, D);
     float *xr = BF(c, B_XR, float, (long)N * D), *rstd1 = BF(c, B_RSTD1, float, N);
+    prof_mark(c, PR_NORM1);
     k_rmsnorm_bwd<<<rb_blocks, 256, D * 4, c->stream>>>(dx, dh1, xr, rstd1, PP(c, PI(li, L_N1)), GP(c, PI(li, L_N1)), N, D, 1, 1, d.woff);
     // ---- memory read backward
+    prof_mark(c, PR_MEMREAD);
     if (mem) {
         float *mq = BF(c, B_MQ, float, (long)N * d.dm), *phiq = BF(c, B_PHIQ, float, (long)N * d.dk), *denq = BF(c, B_DENQ, float, (long)N * d.Hm);
         float *numq = BF(c, B_NUMQ, float, (long)N * D), *dnum = BF(c, B_DNUMQ, float, (long)N * D), *dden = BF(c, B_DDENQ, float, (long)N * d.Hm);
@@ -2440,7 +2642,7 @@ static void layer_bwd(Ctx* c, int li, const Step& s, const float* x, const float
                dphi + h * dkh, F32, d.dk, (long long)s.T1 * d.dk, s.B);
         }
         k_dphi_add<<<(N * d.Hm + 7) / 8, 256, 0, c->stream>>>(dphi, dden, st_in->z, NULL, NULL, N, s.T1, dkh, d.Hm);
-        k_dz_acc<<<s.B * d.Hm, 256, 0, c->stream>>>(dst->z, dden, phiq, s.T1, dkh, d.Hm);
+        k_dz_acc<<<dim3(s.B * d.Hm, (s.T1 + DZ_ROWS - 1) / DZ_ROWS), 256, 0, c->stream>>>(dst->z, dden, phiq, s.T1, dkh, d.Hm);
         k_dpfp_bwd<<<(N * d.Hm + 7) / 8, 256, 8 * dkh * 4, c->stream>>>(mq, d.dm, dphi, dmq, d.dm, N, d.dm, d.Hm);
         lin32_dx(c, dx, D, dmq, d.dm, PP(c, PI(li, L_MQ)), N, d.dm, D, 1.f);
         lin32_dw(c, GP(c, PI(li, L_MQ)), dmq, d.dm, x, D, N, d.dm, D);
@@ -2494,6 +2696,8 @@ static void head(Ctx* c, const Step& s, const float* x, int start, int T, const 
                  int is_last_piece, const float* inv_n, float* dxo) {
     Dims& d = c->d;
     int D = d.D, V = d.V, R = s.B * s.Tr;
+    c->prof_pass = 0;
+    prof_mark(c, PR_HEAD);
     floatX* hf = BF(c, B_HF, floatX, (long)R * D);
     float* rstdf = BF(c, B_RSTDF, float, R);
     k_rmsnorm<<<R, 256, 0, c->stream>>>(NULL, x, NULL, NULL, NULL, 1, hf, rstdf, PP(c, P_NORMF), D, d.c.norm_eps, s.Tr, s.T1, d.woff);
@@ -2567,6 +2771,7 @@ API void* armt_create(const ArmtConfig* cfg) {
     CK(cudaMallocHost((void**)&c->htab, 32 * MAXL * 24));
     CK(cudaEventCreateWithFlags(&c->pack_done, cudaEventDisableTiming));
     c->gmask = (uint8_t*)calloc(c->d.n_params, 1);
+    { const char* pv = getenv("ARMT_PROF"); if (pv && atoi(pv)) c->prof = new Prof(); }
     memset(c->gmask, 1, c->d.n_params);
     return c;
     API_CATCH(NULL)
@@ -2596,6 +2801,7 @@ API void armt_destroy(void* p) {
     cudaFreeHost(c->htab);
     cudaEventDestroy(c->pack_done);
     free(c->tr_Tr); free(c->tr_Tm); free(c->tr_start); free(c->gmask); free(c->hy_w); free(c->hy_args);
+    if (c->prof) { for (cudaEvent_t e : c->prof->ev) cudaEventDestroy(e); delete c->prof; }
     free(c);
 }
 // which parameters need gradients (1 byte each, canonical order); the others' gradient work is skipped
@@ -2641,6 +2847,7 @@ static void forward_impl(Ctx* c, const ArmtForwardArgs* a) {
         for (int k = 0; k < np; k++) {
             int Tr = pen[k] - pst[k], Tm = pw[k] ? d.M : 0;
             Step s = make_step(c, B, Tr, Tm);
+            c->prof_pass = 0; prof_mark(c, PR_EMBED);
             k_embed<<<s.N, 256, 0, c->stream>>>(x0, a->ids, T, pst[k], PP(c, P_EMB), PP(c, P_MEMTOK), Tr, Tm, D);
             if (a->reset && a->state) for (int i = 0; i < d.L; i++) {
                 LAUNCH1D(k_mask_zero, nS, a->state[4 * i + 0], a->reset + (long)k * B, (long)d.H * KD * KD, B);
@@ -2697,6 +2904,7 @@ static void forward_impl(Ctx* c, const ArmtForwardArgs* a) {
         c->tr_Tr[k] = Tr; c->tr_Tm[k] = Tm; c->tr_start[k] = pst[k];
         Step s = make_step(c, B, Tr, Tm);
         float* x0 = XS + xs_per * ((long)k * (d.L + 1));
+        c->prof_pass = 0; prof_mark(c, PR_EMBED);
         k_embed<<<s.N, 256, 0, c->stream>>>(x0, a->ids, T, pst[k], PP(c, P_EMB), PP(c, P_MEMTOK), Tr, Tm, D);
         for (int i = 0; i < d.L; i++) {
             long si = (long)i * np + k;
@@ -2730,6 +2938,7 @@ static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale, int l
     float *SS = (float*)c->buf[B_ST_S].p, *SCS = (float*)c->buf[B_ST_CS].p, *SW = (float*)c->buf[B_ST_W].p, *SZ = (float*)c->buf[B_ST_Z].p;
     float *dS = BF(c, B_DST_S, float, nS), *dCs = BF(c, B_DST_CS, float, nCs), *dW = BF(c, B_DST_W, float, nW), *dZ = BF(c, B_DST_Z, float, nZ);
     for (int i = hi - 1; i >= lo; i--) {
+        c->prof_pass = 2; prof_mark(c, PR_COPY);
         zero(c, dS, nS * 4); zero(c, dCs, nCs * 4); zero(c, dW, nW * 4); zero(c, dZ, nZ * 4);
         for (int k = np - 1; k >= 0; k--) {
             Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
@@ -2753,6 +2962,7 @@ static void backward_impl(Ctx* c, const int64_t* ids, const float* gscale, int l
     if (lo > 0) return;
     for (int k = 0; k < np; k++) {
         Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+        c->prof_pass = 2; prof_mark(c, PR_EMBED);
         k_embed_bwd<<<s.N, 256, 0, c->stream>>>(DXS + xs_per * k, ids, T, c->tr_start[k], GP(c, P_EMB), GP(c, P_MEMTOK), s.Tr, s.Tm, D);
     }
     if (gscale && g0 > 0) LAUNCH1D(k_scale, g0, c->grad, g0, gscale);   // the global parameters (embeddings, head, final norm)
@@ -2840,6 +3050,7 @@ static void hy_begin_impl(Ctx* c, const ArmtForwardArgs* a, int* pieces, int cap
     }
     for (int k = 0; k < np; k++) {
         Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+        c->prof_pass = 0; prof_mark(c, PR_EMBED);
         k_embed<<<s.N, 256, 0, c->stream>>>(hx(c, k, 0), a->ids, T, pst[k], PP(c, P_EMB), PP(c, P_MEMTOK), s.Tr, s.Tm, D);
     }
     c->hy_active = 1;
@@ -2932,6 +3143,7 @@ static void hy_run_bwd_impl(Ctx* c, int lo, int hi, const float* d_real_out, con
     float *dS = BF(c, B_DST_S, float, nS), *dCs = BF(c, B_DST_CS, float, nCs), *dW = BF(c, B_DST_W, float, nW), *dZ = BF(c, B_DST_Z, float, nZ);
     for (int i = hi - 1; i >= lo; i--) {
         if (d.c.attn[i]) armt_fail("armt_hy_run_bwd: layer " + std::to_string(i) + " is an attention layer");
+        c->prof_pass = 2; prof_mark(c, PR_COPY);
         zero(c, dS, nS * 4); zero(c, dCs, nCs * 4); zero(c, dW, nW * 4); zero(c, dZ, nZ * 4);
         for (int k = np - 1; k >= 0; k--) {
             Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
@@ -2955,6 +3167,7 @@ static void hy_run_bwd_impl(Ctx* c, int lo, int hi, const float* d_real_out, con
     const ArmtForwardArgs* a = hya(c);
     for (int k = 0; k < np; k++) {
         Step s = make_step(c, B, c->tr_Tr[k], c->tr_Tm[k]);
+        c->prof_pass = 2; prof_mark(c, PR_EMBED);
         k_embed_bwd<<<s.N, 256, 0, c->stream>>>(DXS + xs_per * k, a->ids, c->tr_T, c->tr_start[k], GP(c, P_EMB), GP(c, P_MEMTOK), s.Tr, s.Tm, D);
     }
     c->hy_active = 0;
@@ -2967,6 +3180,7 @@ API int armt_hy_begin(void* p, const float** params, const ArmtForwardArgs* a, i
     set_stream(c, a->stream);
     if (c->d.KD == 64) hy_begin_impl<64>(c, a, pieces, cap, np_out); else hy_begin_impl<128>(c, a, pieces, cap, np_out);
     CK(cudaGetLastError());
+    prof_flush(c);
     return 0;
     API_CATCH(-1)
 }
@@ -2981,6 +3195,7 @@ API int armt_hy_run(void* p, const float** params, int lo, int hi, const float* 
     if (c->d.KD == 64) hy_run_impl<64>(c, lo, hi, real_in, mem_in, real_out, mem_out);
     else hy_run_impl<128>(c, lo, hi, real_in, mem_in, real_out, mem_out);
     CK(cudaGetLastError());
+    prof_flush(c);
     return 0;
     API_CATCH(-1)
 }
@@ -2992,6 +3207,7 @@ API int armt_hy_head(void* p, const float** params, const float* real_in, void* 
     set_stream(c, stream);
     hy_head_impl(c, real_in);
     CK(cudaGetLastError());
+    prof_flush(c);
     return 0;
     API_CATCH(-1)
 }
@@ -3003,6 +3219,7 @@ API int armt_hy_head_bwd(void* p, const float** params, const float* gscale, flo
     set_stream(c, stream);
     hy_head_bwd_impl(c, gscale, d_real);
     CK(cudaGetLastError());
+    prof_flush(c);
     return 0;
     API_CATCH(-1)
 }
@@ -3017,6 +3234,7 @@ API int armt_hy_run_bwd(void* p, const float** params, int lo, int hi, const flo
     if (c->d.KD == 64) hy_run_bwd_impl<64>(c, lo, hi, d_real_out, d_mem_out, d_real_in, d_mem_in);
     else hy_run_bwd_impl<128>(c, lo, hi, d_real_out, d_mem_out, d_real_in, d_mem_in);
     CK(cudaGetLastError());
+    prof_flush(c);
     if (lo == 0) c->tr_grad = NULL;
     return 0;
     API_CATCH(-1)
@@ -3031,6 +3249,7 @@ API int armt_forward(void* p, const float** params, const ArmtForwardArgs* a) {
     set_stream(c, a->stream);
     if (c->d.KD == 64) forward_impl<64>(c, a); else forward_impl<128>(c, a);
     CK(cudaGetLastError());
+    prof_flush(c);
     return 0;
     API_CATCH(-1)
 }
@@ -3045,6 +3264,7 @@ API int armt_backward_range(void* p, const float** params, const int64_t* ids, c
     set_stream(c, stream);
     if (c->d.KD == 64) backward_impl<64>(c, ids, gscale, lo, hi); else backward_impl<128>(c, ids, gscale, lo, hi);
     CK(cudaGetLastError());
+    prof_flush(c);
     if (lo == 0) c->tr_grad = NULL;
     return 0;
     API_CATCH(-1)
@@ -3053,3 +3273,31 @@ API int armt_backward(void* p, const float** params, const int64_t* ids, const f
     return armt_backward_range(p, params, ids, gscale, stream, 0, ((Ctx*)p)->d.L);
 }
 
+
+// phase profile (ARMT_PROF=1): a text table of GPU ms per phase (forward / recompute / backward) since the last reset, divided
+// by nsteps
+API int armt_prof_report(void* p, char* buf, int len, int reset, int nsteps) {
+    Ctx* c = (Ctx*)p;
+    if (!c->prof) { snprintf(buf, len, "phase profiler off (set ARMT_PROF=1 before the context is created)\n"); return 0; }
+    Prof& f = *c->prof;
+    double div = nsteps > 0 ? nsteps : 1, tot = 0.0, col[3] = {};
+    for (int q = 0; q < 3; q++) for (int i = 0; i < PR_COUNT; i++) f.ms[q][i] /= div;
+    for (int q = 0; q < 3; q++) for (int i = 1; i < PR_COUNT; i++) { tot += f.ms[q][i]; col[q] += f.ms[q][i]; }
+    int n = snprintf(buf, len, "%-38s %10s %10s %10s %10s %6s\n", "phase", "forward", "recompute", "backward", "total ms", "share");
+    int order[PR_COUNT], m = 0;
+    for (int i = 1; i < PR_COUNT; i++) order[m++] = i;
+    for (int a = 0; a < m; a++) for (int b = a + 1; b < m; b++) {
+        double ta = f.ms[0][order[a]] + f.ms[1][order[a]] + f.ms[2][order[a]], tb = f.ms[0][order[b]] + f.ms[1][order[b]] + f.ms[2][order[b]];
+        if (tb > ta) { int t = order[a]; order[a] = order[b]; order[b] = t; }
+    }
+    for (int a = 0; a < m && n < len; a++) {
+        int i = order[a];
+        double t = f.ms[0][i] + f.ms[1][i] + f.ms[2][i];
+        if (t <= 0.0) continue;
+        n += snprintf(buf + n, len - n, "%-38s %10.2f %10.2f %10.2f %10.2f %5.1f%%\n", PR_NAME[i], f.ms[0][i], f.ms[1][i], f.ms[2][i], t,
+                      tot > 0 ? 100.0 * t / tot : 0.0);
+    }
+    if (n < len) n += snprintf(buf + n, len - n, "%-38s %10.2f %10.2f %10.2f %10.2f\n", "all phases", col[0], col[1], col[2], tot);
+    for (int q = 0; q < 3; q++) for (int i = 0; i < PR_COUNT; i++) f.ms[q][i] = reset ? 0.0 : f.ms[q][i] * div;
+    return 0;
+}
