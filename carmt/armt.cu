@@ -3445,6 +3445,12 @@ typedef struct {
 
 static std::string g_err;
 API const char* armt_last_error() { return g_err.c_str(); }
+// the first 16 hex digits of the sha256 of the armt.cu this library was built from (the Makefile passes it): the Python
+// side refuses a library whose armt.cu has changed since (a checkout or job directory that kept an old build)
+#ifndef ARMT_SRC_HASH
+#define ARMT_SRC_HASH "unknown"
+#endif
+API const char* armt_source_hash() { return ARMT_SRC_HASH; }
 #define API_TRY try {
 #define API_CATCH(ret) } catch (const std::exception& e_) { g_err = e_.what(); return ret; }
 API void armt_set_allocator(armt_alloc_fn a, armt_free_fn f) { g_alloc = a; g_free = f; }

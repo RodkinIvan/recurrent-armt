@@ -31,6 +31,11 @@ summary: [reports/carmt_speedup.md](../reports/carmt_speedup.md). Raw outputs: [
 make -C carmt CUDA_HOME=<cuda toolkit> ARCH=sm_89          # or: bash carmt/build_env.sh [prefix] [arch]
 ```
 
+Each library carries a hash of the `armt.cu` it was built from. The Python side refuses a library whose `armt.cu` has
+changed since (a checkout or job directory that kept an old build would otherwise run the old kernels) and names the
+rebuild command, `make -C carmt -B`. `CARMT_ALLOW_STALE_LIB=1` accepts such a library with a warning, for a deliberately
+pinned build. A missing library is still built on first use.
+
 ```python
 import carmt
 model = RecurrentARMTForCausalLM(cfg)          # GDN-2 backbone, as now

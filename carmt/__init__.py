@@ -25,9 +25,11 @@ from __future__ import annotations
 import atexit
 import ctypes
 import fcntl
+import hashlib
 import os
 import subprocess
 import sys
+import warnings
 import weakref
 from typing import Any
 
@@ -132,6 +134,34 @@ def _torch_free(ptr, stream):
     torch.cuda.caching_allocator_delete(int(ptr))
 
 
+def _check_source(lib, path: str) -> None:
+    """Refuse a library built from another armt.cu than the one next to it. _lib builds a library only when the file is
+    missing, so a checkout or job directory that kept an old build would otherwise run the old kernels without a word.
+    A library without armt_source_hash predates this check and is refused too. No armt.cu next to the library (e.g. a
+    custom library_path): nothing to compare. CARMT_ALLOW_STALE_LIB=1 accepts a mismatch (a deliberately pinned build)."""
+    src = os.path.join(os.path.dirname(os.path.abspath(path)), "armt.cu")
+    if not os.path.exists(src):
+        return
+    with open(src, "rb") as f:
+        want = hashlib.sha256(f.read()).hexdigest()[:16]
+    try:
+        fn = lib.armt_source_hash
+    except AttributeError:
+        have = None
+    else:
+        fn.restype = ctypes.c_char_p
+        have = fn().decode()
+    if have == want:
+        return
+    what = ("predates the source check (no armt_source_hash)" if have is None else
+            f"was built from another armt.cu (library {have}, source {want})")
+    msg = f"carmt: {path} {what}; rebuild it: make -C {os.path.dirname(os.path.abspath(path))} -B"
+    if os.environ.get("CARMT_ALLOW_STALE_LIB") == "1":
+        warnings.warn(msg + " (used anyway: CARMT_ALLOW_STALE_LIB=1)")
+        return
+    raise RuntimeError(msg + " (or set CARMT_ALLOW_STALE_LIB=1 to use it as it is)")
+
+
 def _lib(precision: str) -> ctypes.CDLL:
     if precision not in _LIBS:
         path = library_path(precision)
@@ -139,6 +169,7 @@ def _lib(precision: str) -> ctypes.CDLL:
             major, minor = torch.cuda.get_device_capability()
             build(arch=f"sm_{major}{minor}")
         lib = ctypes.CDLL(path)
+        _check_source(lib, path)
         vp, i, l = ctypes.c_void_p, ctypes.c_int, ctypes.c_long
         lib.armt_last_error.restype = ctypes.c_char_p
         lib.armt_set_allocator.argtypes = [_ALLOC_FN, _FREE_FN]

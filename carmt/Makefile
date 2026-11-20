@@ -4,8 +4,12 @@
 CUDA_HOME ?= $(if $(CONDA_PREFIX),$(CONDA_PREFIX),/usr/local/cuda)
 NVCC      := $(CUDA_HOME)/bin/nvcc
 ARCH      ?= sm_89
+# the first 16 hex digits of armt.cu's sha256, built into every library (armt_source_hash): carmt/__init__.py refuses a
+# library built from another armt.cu than the one next to it
+SRC_HASH  := $(shell (sha256sum armt.cu 2>/dev/null || shasum -a 256 armt.cu) | cut -c1-16)
 FLAGS     := -O3 -arch=$(ARCH) -std=c++17 -Xcompiler -fPIC -shared -I$(CUDA_HOME)/include -I$(CUDA_HOME)/targets/x86_64-linux/include \
-             -L$(CUDA_HOME)/lib -L$(CUDA_HOME)/lib64 -Xlinker -rpath=$(CUDA_HOME)/lib -Xlinker -rpath=$(CUDA_HOME)/lib64
+             -L$(CUDA_HOME)/lib -L$(CUDA_HOME)/lib64 -Xlinker -rpath=$(CUDA_HOME)/lib -Xlinker -rpath=$(CUDA_HOME)/lib64 \
+             -DARMT_SRC_HASH='"$(SRC_HASH)"'
 
 all: libarmt_bf16.so libarmt_fp32.so libarmt_bf16s32.so
 
