@@ -1,7 +1,7 @@
 # carmt records
 
-Raw outputs behind the numbers in `carmt/README.md` and `reports/carmt_speedup.md`. Measured on 12 Nov 2026 (GDN-2) and 13 Nov 2026
-(Qwen3.5 hybrid) on three hosts:
+Raw outputs behind the numbers in `carmt/README.md` and `reports/carmt_speedup.md`. Measured on 12 Nov 2026 (GDN-2), 13 Nov 2026
+(Qwen3.5 hybrid) and 20 Nov 2026 (kernel work, bottom of the table) on three hosts:
 - `mbz_nlp2`: RTX 6000 Ada;
 - `mbz_nlp2.07`: RTX 5880 Ada (2 GPUs);
 - `mbz_nlp2.14`: RTX 5880 Ada (GPU 1; the original's fla / causal-conv1d kernels are installed there).
@@ -36,3 +36,12 @@ report, before those changes.
 | `bench_rtx6000_bf16_splitstate.json` | the optional `-DARMT_SPLIT_STATE` build (hi/lo bf16 state): ~10% slower, which is why it is off | previous, split |
 | `bench_rtx6000_decode_after_fix.json` | `bench.py --what decode`, after the original's fix | previous |
 | `bench_rtx6000_original_vertical.log` | `bench.py --vertical`: the original in segments-first mode is as fast as layers-first | earlier |
+| **Kernel work, 20 Nov 2026** (branch `carmt-perf`; "previous" = `hybrid-qwen35`) | | |
+| `kernels_ab_rtx5880.log` | in-process A/B of every step of the work (two builds' training / inference steps alternated in one process), clock and power during training, GPU idle time, the two-stream overlap test, kbench phase times, the GEMM tuner's burst timings; the final build against the previous one; tests and bf16 gradient accuracy | each step; final |
+| `kernels_ab_rtx6000.log` | the final build against the previous one (in-process A/B, training and inference), tests, bf16 gradient accuracy, and the bisect of the accuracy regression the work had introduced and then fixed | final |
+| `train_ddp_rtx6000_kernels_{base,new}{1,2}.log` | 30-step 2-GPU DDP runs of `carmt/train_carmt.py`, previous (base) and final (new) build alternated: 36.8k / 36.8k vs 43.9k / 44.0k tok/s, same losses | both |
+| `bench_rtx6000_bf16_kernels.json` | `carmt/bench.py`: training / inference / generation, carmt and the original in one run | final |
+| `profile_rtx6000_carmt_train_kernels.log` | `carmt/profile_kernels.py --what train --rows 400`: every kernel of one training step | final |
+| `long_context_rtx6000_kernels.log` | `carmt/long_context.py carmt ... last` and `... loss`, 1M / 4M / 10M tokens (the 1M runs include the one-time GEMM tuning) | final |
+| `tests_rtx5880_kernels.log`, `tests_rtx6000_kernels.log` | `pytest carmt/tests -rA -s` on the final build (after the review fixes): 68 passed on each GPU, with the real-dimension bf16 accuracy lines and the fused-backward-vs-GEMM-path check | final |
+| `dist_check_2x_rtx5880_kernels.log` | `torchrun --nproc_per_node 2 carmt/tests/dist_check.py` on the final build: the fp32 DDP / ZeRO-1 / ZeRO-2 checks pass; the bf16 370M part ran out of memory (other training runs held 35 GB of GPU 0) | final |

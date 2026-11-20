@@ -1,0 +1,172 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /mnt/data/users/ivan.rodkin/carmt_perf/new
+plugins: anyio-4.16.0
+collected 68 items
+
+carmt/tests/test_carmt.py carmt: timing cuBLAS GEMM algorithms for new shapes (once per GPU model and cuBLAS version; cached in /mnt/data/users/ivan.rodkin/carmt_perf/kbcache_NVIDIA_RTX_5880_Ada_Generation_120604_t5.txt)
+.........carmt: timing cuBLAS GEMM algorithms for new shapes (once per GPU model and cuBLAS version; cached in /mnt/data/users/ivan.rodkin/carmt_perf/kbcache_NVIDIA_RTX_5880_Ada_Generation_120604_t5.txt)
+...........................Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 12807.42it/s]
+
+[fp32] loss exact-ref 12.396810 carmt 12.396811 (|d| 9.54e-07) original 12.396691 (|d| 1.18e-04)
+.Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 13087.96it/s]
+
+[bf16] loss exact-ref 12.393582 carmt 12.394079 (|d| 4.97e-04) original 12.394256 (|d| 6.73e-04)
+..........Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 12945.83it/s]
+
+[bf16 real dims, scan_fp32=False, tf32=False] median rel-norm error carmt 9.72e-03 original 1.05e-02
+   memory_layers.1.W_mb.bias                               carmt 1.22e-02  original 5.23e-04  |g| 2.37e-02
+   memory_layers.1.W_mb.weight                             carmt 1.33e-02  original 2.92e-03  |g| 5.03e-02
+   memory_layers.14.W_mb.bias                              carmt 7.07e-03  original 2.39e-03  |g| 8.60e-02
+   memory_layers.5.W_mb.weight                             carmt 3.67e-02  original 1.56e-02  |g| 1.21e-02
+   memory_layers.5.W_mb.bias                               carmt 8.46e-02  original 3.65e-02  |g| 1.61e-03
+   memory_layers.13.W_mk.weight                            carmt 6.61e-02  original 3.10e-02  |g| 3.24e-01
+   memory_layers.12.W_mb.bias                              carmt 9.81e-03  original 5.34e-03  |g| 4.84e-02
+   memory_layers.13.W_mq.weight                            carmt 4.93e-02  original 2.78e-02  |g| 2.87e-01
+   memory_layers.15.W_mb.weight                            carmt 1.44e-02  original 8.19e-03  |g| 7.77e-01
+   memory_layers.6.W_mb.bias                               carmt 1.74e-03  original 5.46e-04  |g| 5.18e-02
+   memory_layers.0.W_mb.bias                               carmt 1.05e-02  original 6.10e-03  |g| 4.66e-02
+   memory_layers.12.W_mb.weight                            carmt 1.01e-02  original 6.15e-03  |g| 5.42e-01
+   ratio carmt/original: 5% 0.61  25% 0.84  50% 0.88  75% 0.97  95% 1.28  max 23.22
+   (other side) memory_layers.13.W_mb.bias                 carmt 7.86e-04  original 5.58e-03
+   (other side) memory_layers.10.W_mb.bias                 carmt 1.54e-02  original 8.45e-02
+   (other side) memory_layers.2.W_mb.weight                carmt 2.12e-03  original 1.10e-02
+   (other side) memory_layers.9.W_mb.bias                  carmt 4.14e-04  original 1.95e-03
+.Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14862.73it/s]
+carmt: timing cuBLAS GEMM algorithms for new shapes (once per GPU model and cuBLAS version; cached in /mnt/data/users/ivan.rodkin/carmt_perf/kbcache_NVIDIA_RTX_5880_Ada_Generation_120604_t5.txt)
+
+[bf16 real dims, scan_fp32=True, tf32=False] median rel-norm error carmt 9.00e-03 original 1.05e-02
+   memory_layers.1.W_mb.bias                               carmt 5.17e-03  original 5.23e-04  |g| 2.37e-02
+   memory_layers.5.W_mb.weight                             carmt 3.78e-02  original 1.56e-02  |g| 1.21e-02
+   memory_layers.5.W_mb.bias                               carmt 7.55e-02  original 3.65e-02  |g| 1.61e-03
+   model.model.layers.5.attn.k_conv1d.weight               carmt 1.60e-02  original 9.43e-03  |g| 4.33e-01
+   memory_layers.13.W_mk.weight                            carmt 5.18e-02  original 3.10e-02  |g| 3.24e-01
+   model.model.layers.4.norm_1.weight                      carmt 2.53e-02  original 1.53e-02  |g| 6.03e-02
+   memory_layers.1.W_mk.weight                             carmt 1.41e-01  original 8.54e-02  |g| 1.71e-01
+   memory_layers.1.W_mb.weight                             carmt 4.62e-03  original 2.92e-03  |g| 5.03e-02
+   model.model.layers.3.norm_2.weight                      carmt 3.39e-02  original 2.19e-02  |g| 1.85e-01
+   memory_layers.6.W_mb.bias                               carmt 1.49e-03  original 5.46e-04  |g| 5.18e-02
+   memory_layers.7.W_mk.weight                             carmt 1.42e-02  original 1.02e-02  |g| 1.19e+00
+   memory_layers.9.W_mk.weight                             carmt 3.17e-02  original 2.33e-02  |g| 4.48e-01
+   ratio carmt/original: 5% 0.68  25% 0.83  50% 0.87  75% 0.93  95% 1.13  max 9.87
+   (other side) memory_layers.7.W_mb.bias                  carmt 1.15e-03  original 1.12e-02
+   (other side) memory_layers.0.W_mb.weight                carmt 3.02e-03  original 7.12e-03
+   (other side) memory_layers.14.W_mq.weight               carmt 9.00e-03  original 1.81e-02
+   (other side) memory_layers.12.W_mq.weight               carmt 7.63e-03  original 1.52e-02
+.Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 13751.69it/s]
+
+[bf16 real dims, scan_fp32=False, tf32=True] median rel-norm error carmt 9.52e-03 original 1.04e-02
+   memory_layers.12.W_mb.bias                              carmt 1.30e-02  original 3.10e-04  |g| 4.84e-02
+   memory_layers.2.W_mb.bias                               carmt 1.16e-02  original 1.39e-03  |g| 3.35e-02
+   memory_layers.2.W_mb.weight                             carmt 1.09e-02  original 1.86e-03  |g| 7.90e-02
+   memory_layers.14.W_mb.bias                              carmt 4.90e-03  original 2.92e-04  |g| 8.60e-02
+   memory_layers.0.W_mb.weight                             carmt 1.34e-02  original 2.91e-03  |g| 6.95e-02
+   memory_layers.0.W_mb.bias                               carmt 1.39e-02  original 3.38e-03  |g| 4.66e-02
+   memory_layers.12.W_mb.weight                            carmt 1.29e-02  original 3.55e-03  |g| 5.42e-01
+   memory_layers.12.W_mk.weight                            carmt 4.58e-02  original 1.44e-02  |g| 4.47e-01
+   memory_layers.8.W_mb.bias                               carmt 5.32e-03  original 2.89e-03  |g| 8.41e-02
+   memory_layers.15.W_mb.weight                            carmt 1.34e-02  original 7.65e-03  |g| 7.77e-01
+   memory_layers.14.W_mb.weight                            carmt 8.46e-03  original 5.02e-03  |g| 1.32e+00
+   memory_layers.15.W_mq.weight                            carmt 3.10e-02  original 2.07e-02  |g| 7.04e-01
+   ratio carmt/original: 5% 0.60  25% 0.79  50% 0.88  75% 0.97  95% 1.21  max 41.83
+   (other side) memory_layers.7.W_mb.bias                  carmt 9.27e-04  original 1.41e-02
+   (other side) memory_layers.10.W_mb.bias                 carmt 1.31e-02  original 5.91e-02
+   (other side) memory_layers.5.W_mb.bias                  carmt 4.15e-02  original 1.61e-01
+   (other side) memory_layers.5.W_mb.weight                carmt 1.79e-02  original 6.74e-02
+.Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14100.17it/s]
+
+[bf16 real dims, scan_fp32=True, tf32=True] median rel-norm error carmt 9.28e-03 original 1.04e-02
+   memory_layers.12.W_mb.bias                              carmt 8.01e-03  original 3.10e-04  |g| 4.84e-02
+   memory_layers.2.W_mb.bias                               carmt 5.80e-03  original 1.39e-03  |g| 3.35e-02
+   memory_layers.0.W_mb.weight                             carmt 8.99e-03  original 2.91e-03  |g| 6.95e-02
+   memory_layers.2.W_mb.weight                             carmt 5.37e-03  original 1.86e-03  |g| 7.90e-02
+   memory_layers.0.W_mb.bias                               carmt 9.69e-03  original 3.38e-03  |g| 4.66e-02
+   model.model.layers.5.attn.k_conv1d.weight               carmt 1.65e-02  original 6.14e-03  |g| 4.33e-01
+   memory_layers.6.W_mb.bias                               carmt 3.65e-03  original 1.61e-03  |g| 5.18e-02
+   memory_layers.12.W_mb.weight                            carmt 7.88e-03  original 3.55e-03  |g| 5.42e-01
+   memory_layers.11.W_mb.bias                              carmt 2.70e-02  original 1.30e-02  |g| 2.28e-02
+   memory_layers.11.W_mb.weight                            carmt 2.78e-02  original 1.37e-02  |g| 2.15e-01
+   model.model.layers.3.norm_2.weight                      carmt 3.61e-02  original 2.04e-02  |g| 1.85e-01
+   memory_layers.11.W_mq.weight                            carmt 4.74e-02  original 2.75e-02  |g| 5.82e-01
+   ratio carmt/original: 5% 0.67  25% 0.83  50% 0.87  75% 0.95  95% 1.23  max 25.83
+   (other side) memory_layers.5.W_mb.bias                  carmt 8.58e-04  original 1.61e-01
+   (other side) memory_layers.10.W_mb.bias                 carmt 6.66e-03  original 5.91e-02
+   (other side) memory_layers.7.W_mb.bias                  carmt 1.59e-03  original 1.41e-02
+   (other side) memory_layers.10.W_mb.weight               carmt 5.71e-03  original 2.26e-02
+...Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 13157.35it/s]
+
+[k_post_bwd / GEMM path, TF32 on] per-parameter error ratio: median 0.999  90% 1.022  max 2.08
+...
+carmt/tests/test_hybrid.py ............
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[default]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[head128]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[sigmoid_gate]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[in_stream]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[mem_heads2_gating]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[partial_wrap]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[no_memory]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[long_segment]
+PASSED carmt/tests/test_carmt.py::test_logits_fp32[three_layers]
+PASSED carmt/tests/test_carmt.py::test_logits_bf16[default]
+PASSED carmt/tests/test_carmt.py::test_logits_bf16[head128]
+PASSED carmt/tests/test_carmt.py::test_loss_and_token_losses_no_grad
+PASSED carmt/tests/test_carmt.py::test_labels_mask_and_ignore_index
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[default]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[head128]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[sigmoid_gate]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[in_stream]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[mem_heads2_gating]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[partial_wrap]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[no_memory]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[long_segment]
+PASSED carmt/tests/test_carmt.py::test_gradients_fp32[three_layers]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16[False-default]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16[False-head128]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16[True-default]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16[True-head128]
+PASSED carmt/tests/test_carmt.py::test_gradient_accumulation_and_scale
+PASSED carmt/tests/test_carmt.py::test_state_dropout_training
+PASSED carmt/tests/test_carmt.py::test_state_reset_eval
+PASSED carmt/tests/test_carmt.py::test_pieces_equal_whole_and_state_matches[default]
+PASSED carmt/tests/test_carmt.py::test_pieces_equal_whole_and_state_matches[in_stream]
+PASSED carmt/tests/test_carmt.py::test_pieces_equal_whole_and_state_matches[long_segment]
+PASSED carmt/tests/test_carmt.py::test_state_interop_with_original
+PASSED carmt/tests/test_carmt.py::test_generation_matches_forward
+PASSED carmt/tests/test_carmt.py::test_accelerate_api_training_step
+PASSED carmt/tests/test_carmt.py::test_frozen_parameters_get_no_grad
+PASSED carmt/tests/test_carmt.py::test_pretrained_gdn2[fp32]
+PASSED carmt/tests/test_carmt.py::test_pretrained_gdn2[bf16]
+PASSED carmt/tests/test_carmt.py::test_long_input_many_segments
+PASSED carmt/tests/test_carmt.py::test_nograd_forward_between_training_forward_and_backward
+PASSED carmt/tests/test_carmt.py::test_two_runners_in_one_process
+PASSED carmt/tests/test_carmt.py::test_forward_sees_weights_after_optimizer_step[adamw_fused]
+PASSED carmt/tests/test_carmt.py::test_forward_sees_weights_after_optimizer_step[adamw_foreach]
+PASSED carmt/tests/test_carmt.py::test_forward_sees_weights_after_optimizer_step[sgd]
+PASSED carmt/tests/test_carmt.py::test_frozen_backbone_memory_gradients
+PASSED carmt/tests/test_carmt.py::test_errors_raise_python_exceptions
+PASSED carmt/tests/test_carmt.py::test_library_memory_is_visible_to_torch
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16_real_dimensions[False-False]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16_real_dimensions[False-True]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16_real_dimensions[True-False]
+PASSED carmt/tests/test_carmt.py::test_gradients_bf16_real_dimensions[True-True]
+PASSED carmt/tests/test_carmt.py::test_fused_scan_backward_matches_gemm_path[default]
+PASSED carmt/tests/test_carmt.py::test_fused_scan_backward_matches_gemm_path[head128]
+PASSED carmt/tests/test_carmt.py::test_fused_scan_backward_matches_gemm_path_real_dimensions
+PASSED carmt/tests/test_carmt.py::test_training_steps_do_not_repack_weights
+PASSED carmt/tests/test_carmt.py::test_process_exits_cleanly_with_a_model_alive_at_exit
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[64-ends_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[64-starts_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[57-ends_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_fp32[57-starts_attn]
+PASSED carmt/tests/test_hybrid.py::test_loss_and_gradients_fp32[ends_attn]
+PASSED carmt/tests/test_hybrid.py::test_loss_and_gradients_fp32[starts_attn]
+PASSED carmt/tests/test_hybrid.py::test_logits_and_gradients_bf16
+PASSED carmt/tests/test_hybrid.py::test_pieces_equal_whole_and_state_interop
+PASSED carmt/tests/test_hybrid.py::test_generation_matches_forward
+PASSED carmt/tests/test_hybrid.py::test_state_dropout_training
+PASSED carmt/tests/test_hybrid.py::test_accelerate_training_steps_and_frozen_backbone
+PASSED carmt/tests/test_hybrid.py::test_long_inference_in_chunks_equals_whole
+======================== 68 passed in 94.21s (0:01:34) =========================

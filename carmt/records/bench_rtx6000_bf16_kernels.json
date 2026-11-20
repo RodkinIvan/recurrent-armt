@@ -1,0 +1,34 @@
+{
+ "gpu": "NVIDIA RTX 6000 Ada Generation",
+ "batch": 8,
+ "window": 8192,
+ "segment_size": 1024,
+ "num_mem_tokens": 32,
+ "precision": "bf16",
+ "original_mode": "horizontal",
+ "train/carmt": {
+  "s": 2.5590980405919255,
+  "tok_per_s": 25609.02277305537,
+  "peak_gb": 13.573846340179443
+ },
+ "train/original_ckpt": {
+  "s": 4.550568631617352,
+  "tok_per_s": 14401.716643642258,
+  "peak_gb": 14.430885791778564
+ },
+ "train/original_nockpt": "OOM",
+ "infer/carmt": {
+  "s": 0.705298110563308,
+  "tok_per_s": 92919.57403325192
+ },
+ "infer/original": {
+  "s": 1.0184217786882073,
+  "tok_per_s": 64350.5484382066
+ },
+ "decode/carmt": {
+  "ms_per_token": 2.679672124941135
+ },
+ "decode/original": {
+  "ms_per_token": 16.097451789391926
+ }
+}

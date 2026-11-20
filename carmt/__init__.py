@@ -155,6 +155,8 @@ def _lib(precision: str) -> ctypes.CDLL:
         lib.armt_forward.argtypes, lib.armt_forward.restype = [vp, ctypes.POINTER(vp), ctypes.POINTER(ArmtForwardArgs)], i
         lib.armt_backward.argtypes, lib.armt_backward.restype = [vp, ctypes.POINTER(vp), vp, vp, vp], i
         lib.armt_backward_range.argtypes, lib.armt_backward_range.restype = [vp, ctypes.POINTER(vp), vp, vp, vp, i, i], i
+        if hasattr(lib, "armt_prof_report"):   # (libraries built before the profiler lack it)
+            lib.armt_prof_report.argtypes, lib.armt_prof_report.restype = [vp, ctypes.c_char_p, i, i, i], i
         ip = ctypes.POINTER(ctypes.c_int)
         lib.armt_hy_begin.argtypes, lib.armt_hy_begin.restype = [vp, ctypes.POINTER(vp), ctypes.POINTER(ArmtForwardArgs), ip, i, ip], i
         lib.armt_hy_run.argtypes, lib.armt_hy_run.restype = [vp, ctypes.POINTER(vp), i, i, vp, vp, vp, vp, vp], i
@@ -183,6 +185,20 @@ def _destroy_all():
     callback, which crashes if it runs during interpreter teardown (a model kept in a module global until exit)."""
     for c in list(_LIVE):
         c.close()
+
+
+def prof_report(reset: bool = True, steps: int = 1) -> str:
+    """GPU milliseconds per phase of a layer (forward / the backward's recompute / backward), per step over ``steps`` steps,
+    for every live context. Needs ARMT_PROF=1 in the environment before the contexts are created; the profiled calls
+    synchronize at their ends."""
+    out = []
+    for c in list(_LIVE):
+        if not c.handle or not hasattr(c.lib, "armt_prof_report"):
+            continue
+        buf = ctypes.create_string_buffer(1 << 15)
+        c.lib.armt_prof_report(c.handle, buf, len(buf), int(reset), int(steps))
+        out.append(f"[{c.precision}]\n" + buf.value.decode())
+    return "\n".join(out)
 
 
 class _Context:

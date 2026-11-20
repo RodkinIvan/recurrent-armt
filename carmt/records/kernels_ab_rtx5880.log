@@ -1,0 +1,65 @@
+carmt kernel work, Nov 2026. RTX 5880 Ada (mbz_nlp2.07, GPU 1), GDN-2 370M + ARMT (32 memory tokens, d_mem 64),
+batch 8 x 8192 tokens (8 segments of 1024), bf16 autocast, TF32 on (as train.py).
+
+In-process A/B (two library builds on one model, training steps alternated A, B, A, B, ... so both see the same
+thermal state; median of 10 rounds; per-round ratios in parentheses). Each line: the change against the build before it.
+
+== scan kernels: state passes (tensor cores, 2 blocks / SM, register prefetch), intra-chunk fwd / bwd (ad137b4)
+train B=8: B/A 0.956
+== GEMM tuner (exhaustive cuBLASLt search, randomized-median timing) + 256-byte-aligned gradient slots (fc18fae)
+train B=8: A 3184.8 ms  B 3116.9 ms  B/A 0.979  (per-round B/A: 0.983 0.980 0.979 0.980 0.980 0.979 0.979 0.979 0.981 0.981)  losses 12.270327 12.270327
+   (aligned gradient slots alone, with the old tuner: B/A 1.017 -- the old tuner's choice for aligned weight-gradient
+    GEMMs was slower than the 4-byte kernels the odd layers got; the new tuner fixes both)
+== token prep kernels (96642d9)
+train B=8: A 3073.1 ms  B 3028.1 ms  B/A 0.985  (per-round B/A: 0.992 0.988 0.992 0.988 0.989 0.985 0.983 0.984 0.986 0.985)  losses 12.270327 12.270327
+== fused scan backward after the state pass (k_post_bwd)
+train B=8: A 3010.4 ms  B 2945.1 ms  B/A 0.978  (per-round B/A: 0.982 0.975 0.981 0.981 0.980 0.978 0.979 0.978 0.979 0.979)  losses 12.270327 12.270327
+== noise check: the same build against itself
+train B=8: A 3019.2 ms  B 3030.9 ms  B/A 1.004  (per-round B/A: 1.007 1.005 1.000 1.004 1.001 0.998)
+
+GPU clock and power during training (nvidia-smi every 200 ms, 272 busy samples):
+SM clock MHz: median 1455  p10 1365  p90 1575      (boost clock ~2460)
+power W: median 284  p10 283  p90 285               (power limit 285 W)
+temp: median 77 max 83
+throttle reasons: 0x4 (SW power cap) 265 samples, none 7
+-> the training step runs at the power cap: time ~ energy. Sustained GEMM loops settle near 1140 MHz.
+
+GPU timeline of 2 training steps (torch.profiler, CPU + CUDA):
+window 5600.2 ms for 2 steps; GPU busy (any stream) 5569.9 ms (99.5%), idle 30.3 ms
+
+Two independent (layer, segment) steps on two streams vs back to back (conc.cu, one layer, B = 8):
+fwd (one ctx)                                                 5.016 ms per rep
+recompute (one ctx)                                           4.606 ms per rep
+bwd (one ctx)                                                11.102 ms per rep
+2 x full, serialized (b waits for a)                         42.661 ms per rep
+2 x full, concurrent streams                                 44.554 ms per rep   (x1.033: slower)
+2 x fwd concurrent (forward wavefront)                       10.580 ms per rep   (x1.055 vs 2 x fwd)
+bwd || recompute (pipelined backward)                        16.496 ms per rep   (x1.050 vs bwd + recompute)
+
+Phase profile of one (layer, segment) step (kbench, ms; forward / recompute / backward), before -> after this work:
+token prep (conv, l2norm, gates)       0.68 / 0.68 / -     -> 0.57 / 0.57 / -
+token prep bwd 1                       0.82                -> 0.69
+token prep bwd 2 (conv)                0.55                -> 0.40
+scan: intra-chunk bwd                  1.26                -> 1.12 (the S0 . dSe row sums moved into k_post_bwd)
+scan bwd: GEMMs after the state pass   1.24 (10 GEMMs)     -> 0.89 (k_post_bwd)
+
+== GEMM tuner: large shapes' leading candidates also timed in bursts below the power cap (1bf1c9d), against the
+   cap-only choice (deb8670)
+train B=8: A 3020.4 ms  B 2810.8 ms  B/A 0.931  (per-round B/A: 0.934 0.932 0.933 0.930 0.930 0.931 0.930 0.930 0.927 0.930)  losses 12.270327 12.270327
+infer B=8: A 805.1 ms  B 733.6 ms  B/A 0.911  (per-round B/A: 0.908 0.913 0.909 0.910 0.917 0.911 0.911 0.914 0.911 0.911 0.910 0.911)  losses 12.270327 12.270327
+gemm_search GS_BURST=1 (ms, sustained at the cap / burst after 40 ms idle):
+in_proj fwd   cap-only choice 1.165 / 0.934   algo 6 tile 24 stages 9: 1.203 / 0.824
+w12 fwd       cap-only choice 0.450 / 0.438   algo 6 tile 24 stages 9: 0.453 / 0.377
+head fwd      cap-only choice 1.772 / 1.494   algo 6 tile 24 stages 9: 1.785 / 1.259
+one-time tuning of the 370M model's shapes: first training step 56.6 s (normally ~2.7 s)
+
+== final build (ae30e57) vs hybrid-qwen35 (898aaf1)
+train B=8: A 3324.8 ms  B 2827.8 ms  B/A 0.851  (per-round B/A: 0.857 0.859 0.861 0.861 0.855 0.851 0.854 0.851 0.860 0.859 0.847 0.852)  losses 12.270264 12.270264
+infer B=8: A 797.3 ms  B 732.5 ms  B/A 0.919  (per-round B/A: 0.916 0.917 0.917 0.914 0.918 0.918 0.915 0.913 0.921 0.916 0.918 0.915)  losses 12.270264 12.270264
+tests: 65 passed. test_gradients_bf16_real_dimensions (median / 95% of carmt's error over the original's own bf16 error):
+hybrid-qwen35 bf16 scan 0.88 / 1.22, fp32 scan 0.86 / 1.17; final bf16 scan 0.88 / 1.29, fp32 scan 0.87 / 1.14,
+bf16 scan with TF32 on (k_post_bwd) 0.87 / 1.26.
+
+== after the review fixes (records/tests_rtx5880_kernels.log): 68 passed; real-dimension bf16 accuracy median / 95%:
+bf16 scan TF32 off 0.88 / 1.28, TF32 on (k_post_bwd) 0.88 / 1.21; fp32 scan 0.87 / 1.13 and 0.87 / 1.23;
+k_post_bwd / GEMM path per-parameter error ratio (TF32 on): median 0.999, 90% 1.022, max 2.08.
