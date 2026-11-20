@@ -20,9 +20,10 @@ summary: [reports/carmt_speedup.md](../reports/carmt_speedup.md). Raw outputs: [
 | `train_carmt.py` | runs the unchanged `train.py` with carmt: `torchrun ... carmt/train_carmt.py <train.py args>` |
 | `jobs/train_carmt.json` | router job: the `gdn2_370m_armt` run through `train_carmt.py` |
 | `build_env.sh` | installs a CUDA 12.6 toolkit into a separate prefix (the jobs' env has none) and builds |
-| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 48 + 12 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
+| `tests/test_carmt.py`, `tests/test_hybrid.py`, `tests/dist_check.py` | 53 + 12 GPU tests (GDN-2, Qwen3.5 hybrid); DDP / ZeRO-1 / ZeRO-2 checks on 2 GPUs (`--model qwen35` for the hybrid) |
 | `qwen35_check.py` | Qwen3.5-0.8B-Base + ARMT: carmt vs HF / the original / the exact recurrence, fp32 and bf16 gradients |
 | `bench.py`, `profile_kernels.py`, `long_context.py`, `speedup_figure.py` | speed vs the original; per-kernel GPU time; memory vs context length; the report figure |
+| `profile_phases.py`, `kbench.cu`, `kbench_cmp.py`, `gemm_search.cu` | development: a training step by phase (`ARMT_PROF=1`); one (layer, segment) step by phase at the real sizes, without Python, with output dumps to compare builds; the GEMM tuner's choice against every cuBLASLt candidate |
 
 ## Use
 
@@ -88,7 +89,7 @@ weight-gradient GEMMs. Back-to-back rounds drive the GPU deeper into its power c
 Ada a GEMM loop settles near 1.1 GHz, a training step runs at ~1.45 GHz, and forward-only work higher still, and kernels
 rank differently there. So the large shapes' leading candidates are also timed in bursts (the GPU idles 40 ms before each
 call), and the kernel with the best sum of the two times, each relative to its regime's best, is kept. Against the
-cap-only choice this made the 370M model's training step 6.6% faster and its inference forward 8% faster. The search
+cap-only choice this made the 370M model's training step 6.9% faster and its inference forward 8.9% faster. The search
 takes about a minute for the 370M model's shapes, once; it prints one line when it starts.
 
 The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>_t4.txt` under a file lock, so DDP ranks
@@ -247,7 +248,7 @@ Two references:
 |---|---|
 | logits, fp32, 9 configs (head_dim 64/128, sigmoid gate, mem in stream, 2 memory heads + gating, partial wrap, no memory, segment 100 with partial chunks, 3 layers) | ≤ 1e-4 relative to the exact reference (fla path: ~1e-3) |
 | loss / every parameter gradient, fp32, same 9 configs | loss within 1e-5; each gradient ≤ max(3e-4, 1/5 of the original's own TF32 error) |
-| bf16 gradients at the real dimensions (370M checkpoint, head_dim 128, segment 1024, 32 memory tokens), per-parameter relative-norm error vs fp32, both bf16 builds | median 0.82–0.84× the original's own bf16 error; 95th percentile ≤ 1.3× |
+| bf16 gradients at the real dimensions (370M checkpoint, head_dim 128, segment 1024, 32 memory tokens), per-parameter relative-norm error vs fp32, both bf16 builds, TF32 off and on | median 0.80–0.88× the original's own bf16 error; 95th percentile ≤ 1.3× (RTX 5880 and RTX 6000) |
 | state: pieces == whole (also > 4096 segments), returned state == original's, C state continues in the original and vice versa, generation == forward | ≤ 1e-4 |
 | no-grad calls between a training forward and its backward; two models in one process; forward after fused / foreach AdamW and SGD steps; frozen backbone; errors raise; memory visible to PyTorch; no re-pack between micro-steps | pass |
 | state dropout (training), `state_reset`, labels mask / -100, grad accumulation, `accelerate` API | pass |
@@ -258,32 +259,78 @@ Two references:
 ## Speed
 
 RTX 6000 Ada (`mbz_nlp2`). GDN-2 370M + ARMT (32 memory tokens, d_mem 64), windows of 8 × 1024 tokens, bf16 autocast. The
-original runs with gradient checkpointing, as `train.py` runs it; without it, it doesn't fit in 48 GB.
+original runs with gradient checkpointing, as `train.py` runs it; without it, it doesn't fit in 48 GB. The original's DDP and
+long-context numbers are from earlier runs in the same environment; the rest is one `bench.py` run of both
+(`records/bench_rtx6000_bf16_kernels.json`).
 
 | | original | carmt | speedup |
 |---|---|---|---|
-| **training, 2-GPU DDP: the `train.py` job** (`NCCL_P2P_DISABLE=1`, 262k tokens per step) | 26.3k tok/s | 36.2k tok/s | **1.38×** |
-| training step, 1 GPU (batch 8) | 4.49 s | 3.03 s | 1.48× |
-| inference forward with loss (batch 8) | 1.01 s | 0.80 s | 1.27× |
-| long-context inference, 10M tokens in one call, batch 1, last-position logits | 20.8k tok/s, 0.87 GB | 88.8k tok/s, 1.09 GB | 4.27× |
-| long-context loss over every token, 4.2M tokens (original streamed in 64k pieces with `state=`) | 20.3k tok/s, 3.4 GB | 84.1k tok/s, 1.3 GB (one call) | 4.14× |
-| generation (batch 1, 1k-token prompt + 64 tokens) | 16.3 ms/token | 2.85 ms/token | 5.70× |
+| **training, 2-GPU DDP: the `train.py` job** (`NCCL_P2P_DISABLE=1`, 262k tokens per step) | 26.3k tok/s | 44.0k tok/s | **1.67×** |
+| training step, 1 GPU (batch 8) | 4.55 s | 2.56 s | 1.78× |
+| inference forward with loss (batch 8) | 1.02 s | 0.71 s | 1.44× |
+| long-context inference, 10M tokens in one call, batch 1, last-position logits | 20.8k tok/s, 0.87 GB | 91.8k tok/s, 1.09 GB | 4.41× |
+| long-context loss over every token, 4.2M tokens (original streamed in 64k pieces with `state=`) | 20.3k tok/s, 3.4 GB | 85.5k tok/s, 1.3 GB (one call) | 4.21× |
+| generation (batch 1, 1k-token prompt + 64 tokens) | 16.1 ms/token | 2.68 ms/token | 6.01× |
 | memory of a training step: 1 GPU, batch 8 (`max_memory_allocated`) | 14.4 GB | 13.6 GB | |
 | memory logged by `train.py` in the DDP job | 17.1 GB | 19.9 GB | |
 
-**DDP gains less than one GPU.** An optimizer step of the job (7.26 s) is two micro-steps of ~3.2 s (both GPUs busy and
-hot; 3.03 s alone), ~0.25 s of all-reduce the backward doesn't hide, and ~0.6 s of optimizer, clipping, data and logging.
-None of that shrinks with a faster model (`records/ddp_layer_nodes_rtx6000.log`).
+**Kernel work, Nov 2026.** Against the previous build (`hybrid-qwen35`), with the two builds' steps alternated in one
+process (the DDP job: 30-step runs alternated twice; `records/kernels_ab_rtx5880.log`, `records/kernels_ab_rtx6000.log`,
+`records/train_ddp_rtx6000_kernels_*.log`):
 
-**Profile of a 1-GPU training step** (3.20 s GPU time, `records/profile_rtx6000_carmt_train.log`):
-- **cuBLAS GEMMs: 1.64 s (51%).** This includes the scan's chunk-batched GEMMs. The model's linear layers do 176 TFLOP per
-  step, so they average at least 107 TFLOPS; the RTX 6000 Ada's dense bf16 peak is 364 TFLOPS.
-- **GDN-2 scan kernels: 1.23 s (38%).**
-- **Other: 0.33 s (10%).**
+| | RTX 5880 Ada | RTX 6000 Ada |
+|---|---|---|
+| training step, 1 GPU (batch 8) | 1.18× | 1.22× |
+| inference forward with loss (batch 8) | 1.09× | 1.18× |
+| 2-GPU DDP `train.py` job | | 1.20× (36.8k → 44.0k tok/s) |
+
+- GEMM kernel choice, about half of it: the exhaustive cuBLASLt search timed at the power cap and below it (**GEMM
+  kernels** above), and 256-byte-aligned gradient slots.
+- Scan kernels: the state passes on tensor cores at 2 blocks / SM, with the next chunk's operands prefetched into registers;
+  the intra-chunk forward and backward restructured; the 10 chunk-batched GEMMs after the backward state pass fused into one
+  kernel that reads each operand once (`k_post_bwd`; it runs with TF32 on, as `train.py` sets it).
+- Token prep: conv weights in shared memory, the conv inputs sliding through registers, 151 → 80 registers in the forward,
+  token-range parallelism in the conv backward.
+
+The forward computes the same numbers as before (identical losses), and the bf16 gradients' error against the fp32 model is
+the previous build's (per-parameter ratio to it: median 1.00). Two kernel changes that cost accuracy were found that way and
+undone: computing the state passes' products from zero and adding u after (tensor-core fp32 accumulation is not IEEE: +20%
+gradient error), and summing the decay cumsum in another order (+5%). Neither shows on one layer with random data; both show
+on the real model's 16 layers (`records/kernels_ab_rtx6000.log` has the bisect).
+
+**The GPU runs at its power cap.** During a training step the RTX 5880 Ada draws its 285 W limit 97% of the time, at a
+median 1455 MHz against a 2.46 GHz boost, and the GPU is busy 99.5% of the step. Time is energy here: less memory traffic and
+fewer instructions pay even where the math dominates, and cuBLAS kernels rank differently at the cap than at the boost clock.
+
+**Pipeline parallelism doesn't pay on these GPUs.** In the DDP job both GPUs are busy 99.6% of the time; the all-reduce
+stream mostly waits for the slower, hotter GPU, and the job gets ~95% of the two GPUs' combined throughput. A 2-stage
+pipeline would add bubbles of 6–11% with `train.py`'s micro-batches to win back at most ~5%. Overlapping work on one GPU
+doesn't pay either: the backward of layer l and the recompute of layer l − 1 on two streams, or two forward steps of a
+wavefront, run 3–5% slower than back to back (`records/kernels_ab_rtx5880.log`).
+
+**DDP gains less than one GPU.** An optimizer step of the job (5.96 s) is two micro-steps of ~2.6 s (both GPUs busy and
+hot), plus the all-reduce the backward doesn't hide and ~0.6 s of optimizer, clipping, data and logging. None of that
+shrinks with a faster model (`records/ddp_layer_nodes_rtx6000.log`).
+
+**Profile of a 1-GPU training step** (2.48 s GPU time, `records/profile_rtx6000_carmt_train_kernels.log`):
+- **cuBLAS GEMMs: 1.31 s (53%)**, the scan's chunk-batched GEMMs included.
+- **GDN-2 scan kernels: 0.93 s (38%)**: token prep, intra-chunk, state passes, the fused backward, the output norm.
+- **Other: 0.24 s (10%).**
+
+The backward recomputes each (layer, segment) forward: about 22% of a step.
 
 **Tried and dropped.**
 - A two-stream schedule: two whole training steps on two streams run 2–8% slower than back to back
   (`records/overlap_ceiling_rtx6000.log`). The GPU has no idle capacity for overlapping (layer, segment) steps to fill.
 - A low-register conv / gate kernel: no measurable change.
+- The fused scan backward's blocks prefetching the next chunk into L2 at their start: the prefetch competes with the
+  current chunk's loads (slower); issued after the first phase it helps, which is what `k_post_bwd` does.
+- Register prefetch in the backward state pass, and 3 blocks / SM for the prep backward: both spill, both slower.
 
-**Next speedups (not done).** Fusing the scan stages; a single-token recurrent kernel for generation.
+**Next speedups (not done).**
+- Keeping forward activations instead of recomputing them in the backward (~22% of a step): keeping the scan output, the
+  MLP's input and its up-projection (~140 MB per (layer, segment) at batch 8, ~18 GB for a step) would save ~4–5%; an
+  opt-in, since it takes the batch-size headroom.
+- Fusing the forward's o = Qg S0 + M vn into the state pass and u = A wv, Wm = A y into the intra-chunk kernel: under 1%
+  each.
+- A single-token recurrent kernel for generation.

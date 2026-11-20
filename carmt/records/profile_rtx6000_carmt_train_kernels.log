@@ -1,0 +1,86 @@
+total GPU time 2480.8 ms
+    272.9 ms  11.0%     256  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn
+    152.0 ms   6.1%     256  void k_prep_fwd<128, false>(__nv_bfloat16 const*, int, __nv_bfloat16 const*, float const*, float const*, float
+    149.6 ms   6.0%     256  void k_intra_fwd<128>(__nv_bfloat16 const*, __nv_bfloat16 const*, float const*, __nv_bfloat16 const*, float*, 
+    142.2 ms   5.7%     128  void k_intra_bwd<128>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, float const*, __nv_bfl
+    129.4 ms   5.2%     768  ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_tn
+    120.0 ms   4.8%     128  void k_post_bwd<128>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, _
+    118.4 ms   4.8%    1024  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_nn
+    116.3 ms   4.7%     112  void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_128x128_32x4_nt_align8>(cutlass_80_tensorop_s16816ge
+    112.1 ms   4.5%     112  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_32x4_nn_align8>(cutlass_80_tensoro
+    108.4 ms   4.4%     256  void k_state_fwd<128>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, float const*, __nv_bfl
+    105.3 ms   4.2%     400  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_tn
+     98.9 ms   4.0%     368  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn
+     92.3 ms   3.7%     128  void k_prep_bwd1<128, false>(__nv_bfloat16 const*, int, __nv_bfloat16 const*, float const*, float const*, floa
+     78.9 ms   3.2%     272  ampere_s16816gemm_bf16_128x128_ldg8_stages_64x3_nt
+     64.9 ms   2.6%     128  void k_state_bwd<128>(__nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16 const*, __nv_bfloat1
+     54.2 ms   2.2%     520  k_rmsnorm(float*, float const*, __nv_bfloat16 const*, float const*, float const*, int, __nv_bfloat16*, float*,
+     53.5 ms   2.2%     128  ampere_s16816gemm_bf16_256x128_ldg8_stages_32x3_nt
+     52.8 ms   2.1%     128  void k_prep_bwd2<4>(__nv_bfloat16 const*, int, __nv_bfloat16 const*, float const*, float const*, float const*,
+     38.2 ms   1.5%     264  k_rmsnorm_bwd(float*, __nv_bfloat16 const*, float const*, float const*, float const*, float*, int, int, int, i
+     34.7 ms   1.4%     384  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_256x64_16x4_nn_align4>(cutlass_80_tensorop_s1688gemm_256x6
+     34.3 ms   1.4%     256  k_swiglu(__nv_bfloat16*, __nv_bfloat16 const*, long, int)
+     29.8 ms   1.2%      32  ampere_bf16_s16816gemm_bf16_128x256_ldg8_f2f_nn
+     29.0 ms   1.2%     128  void k_onorm_bwd<128>(__nv_bfloat16 const*, __nv_bfloat16 const*, float const*, float const*, __nv_bfloat16 co
+     26.7 ms   1.1%     128  k_swiglu_bwd(__nv_bfloat16*, __nv_bfloat16 const*, __nv_bfloat16 const*, long, int)
+     19.1 ms   0.8%     352  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x64_16x6_nt_align4>(cutlass_80_tensorop_s1688gemm_64x64_
+     18.1 ms   0.7%     256  void k_onorm_fwd<128>(__nv_bfloat16 const*, __nv_bfloat16 const*, float const*, float const*, __nv_bfloat16*, 
+     17.1 ms   0.7%     112  ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_nt
+     16.1 ms   0.6%      16  void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_128x128_64x3_nt_align8>(cutlass_80_tensorop_s16816ge
+     15.7 ms   0.6%      16  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_nn_align8>(cutlass_80_tensoro
+     14.2 ms   0.6%     128  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_256x64_16x4_tn_align4>(cutlass_80_tensorop_s1688gemm_256x6
+     13.6 ms   0.5%     240  k_dpfp_bwd(float const*, int, float const*, float*, int, int, int, int)
+     13.4 ms   0.5%     256  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_bf16_64x128_64x3_nn_align2>(cutlass_80_tensorop_bf16
+     12.1 ms   0.5%      16  void k_ce<__nv_bfloat16>(__nv_bfloat16*, int, int, long, long, int, long const*, float*, int, int, int, float 
+     10.9 ms   0.4%     256  k_cast(__nv_bfloat16*, float const*, long)
+     10.3 ms   0.4%     128  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_nt
+     10.2 ms   0.4%     256  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x64_32x6_tn_align4>(cutlass_80_tensorop_s1688gemm_64x64_
+     10.2 ms   0.4%     128  k_resid(float*, float const*, __nv_bfloat16 const*, long)
+      9.6 ms   0.4%     128  k_read_bwd(float const*, float const*, float const*, float*, float*, int, int)
+      8.2 ms   0.3%     448  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x64_16x6_nn_align4>(cutlass_80_tensorop_s1688gemm_64x64_
+      8.0 ms   0.3%     256  void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_64x128_32x6_nt_align8>(cutlass_80_tensorop_s16816gem
+      7.5 ms   0.3%     128  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x128_32x3_nt_align4>(cutlass_80_tensorop_s1688gemm_64x12
+      6.6 ms   0.3%     480  k_dpfp(float const*, int, float*, float*, float*, float const*, int, int, int, int)
+      5.6 ms   0.2%     448  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x64_16x6_tn_align4>(cutlass_80_tensorop_s1688gemm_64x64_
+      4.0 ms   0.2%     944  void cublasLt::splitKreduce_kernel<32, 16, int, float, float, float, false, float, float, float, true, false, 
+      3.4 ms   0.1%      17  k_scale(float*, long, float const*)
+      3.1 ms   0.1%     224  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x128_32x3_tn_align4>(cutlass_80_tensorop_s1688gemm_64x12
+      2.9 ms   0.1%     112  void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_128x2_tn_align8>(cutlass_80_wmma_te
+      2.9 ms   0.1%     240  k_dz_acc(float*, float const*, float const*, int, int, int)
+      2.5 ms   0.1%     783  Memcpy DtoD (Device -> Device)
+      2.5 ms   0.1%     240  k_dphi_add(float*, float const*, float const*, float const*, float const*, int, int, int, int)
+      2.3 ms   0.1%      16  ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_nt
+      1.9 ms   0.1%     112  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x64_16x6_nt_align4>(cutlass_80_tensorop_s1688gemm_128x6
+      1.8 ms   0.1%       4  void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>, std::array<char*, 1ul> >(int
+      1.4 ms   0.1%     224  k_write_z(float const*, float*, float const*, float const*, float const*, float*, int, int, int)
+      1.3 ms   0.1%     112  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x128_32x3_nn_align4>(cutlass_80_tensorop_s1688gemm_64x12
+      1.2 ms   0.0%     224  k_write_E(float*, float const*, float const*, float const*, float const*, float const*, int, int, int)
+      1.1 ms   0.0%     112  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_64x64_32x6_nt_align4>(cutlass_80_tensorop_s1688gemm_64x64_
+      0.9 ms   0.0%     136  Memset (Device)
+      0.8 ms   0.0%       8  k_embed_bwd(float const*, long const*, int, int, float*, float*, int, int, int)
+      0.8 ms   0.0%     112  k_write_bwd1(float const*, float const*, float const*, float const*, float const*, float const*, float*, float
+      0.8 ms   0.0%     224  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, float, float, float, float, false, true
+      0.7 ms   0.0%     112  k_colsum(float*, float const*, int, int)
+      0.5 ms   0.0%       8  k_embed(float*, long const*, int, int, float const*, float const*, int, int, int)
+      0.5 ms   0.0%     112  k_scatter_add_mem(float*, float const*, int, int, int)
+      0.5 ms   0.0%     112  k_conv_state(float*, float const*, __nv_bfloat16 const*, int, int, int, int, int, int)
+      0.4 ms   0.0%     112  k_resid_mem(float*, float const*, __nv_bfloat16 const*, int, int, int)
+      0.4 ms   0.0%     112  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, float, float, float, float, false, true
+      0.3 ms   0.0%     112  void gemmk1_kernel<int, float, 256, 5, false, false, false, false, cublasGemvTensorStridedBatched<float const>
+      0.3 ms   0.0%     112  k_gather_mem(float*, float const*, int, int, int)
+      0.0 ms   0.0%       8  k_targets(long*, long const*, int, int, int, int)
+      0.0 ms   0.0%       1  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::nativ
+      0.0 ms   0.0%       1  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<long, at::native::func_wrapper_t<long, at::native:
+      0.0 ms   0.0%       1  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native:
+      0.0 ms   0.0%       2  void at::native::vectorized_elementwise_kernel<4, at::native::compare_scalar_kernel<long>(at::TensorIteratorBa
+      0.0 ms   0.0%       1  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{la
+      0.0 ms   0.0%       1  void at::native::_assert_async_cuda_kernel<bool>(bool const*, at::native::Msg)
+      0.0 ms   0.0%       1  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::AUnaryFunctor<long,
+      0.0 ms   0.0%       1  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{la
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<4, at::native::reciprocal_kernel_cuda(at::TensorIteratorBase&):
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<long, long, bool, at::native::(ano
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<float, float, float, at::native::b
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<2, at::native::(anonymous namespace)::launch_clamp_scalar(at::T
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<bool, bool, bool, at::native::Bitw
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<bool, bool, bool, at::native::Bitw
+      0.0 ms   0.0%       1  void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<float, float, float, at::native::b

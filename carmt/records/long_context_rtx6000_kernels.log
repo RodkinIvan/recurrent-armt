@@ -1,0 +1,10 @@
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 15092.62it/s]
+carmt: timing cuBLAS GEMM algorithms for new shapes (once per GPU model and cuBLAS version; cached in /mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/.gemm_cache_NVIDIA_RTX_6000_Ada_Generation_120604_t4.txt)
+carmt    last T= 1.05M  device memory used   0.98 GB    80.5k tok/s  loss 9.493
+carmt    last T= 4.19M  device memory used   1.02 GB    92.5k tok/s  loss 10.960
+carmt    last T=10.49M  device memory used   1.09 GB    91.8k tok/s  loss 9.576
+Loading weights:   0%|          | 0/355 [00:00<?, ?it/s]Loading weights: 100%|██████████| 355/355 [00:00<00:00, 14124.11it/s]
+carmt: timing cuBLAS GEMM algorithms for new shapes (once per GPU model and cuBLAS version; cached in /mnt/data/users/ivan.rodkin/carmt_perf/new/carmt/.gemm_cache_NVIDIA_RTX_6000_Ada_Generation_120604_t4.txt)
+carmt    loss T= 1.05M  device memory used   1.29 GB    73.6k tok/s  loss 12.346
+carmt    loss T= 4.19M  device memory used   1.29 GB    85.5k tok/s  loss 12.340
+carmt    loss T=10.49M  device memory used   1.45 GB    86.2k tok/s  loss 12.345

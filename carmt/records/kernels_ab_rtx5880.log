@@ -42,3 +42,20 @@ token prep bwd 1                       0.82                -> 0.69
 token prep bwd 2 (conv)                0.55                -> 0.40
 scan: intra-chunk bwd                  1.26                -> 1.12 (the S0 . dSe row sums moved into k_post_bwd)
 scan bwd: GEMMs after the state pass   1.24 (10 GEMMs)     -> 0.89 (k_post_bwd)
+
+== GEMM tuner: large shapes' leading candidates also timed in bursts below the power cap (1bf1c9d), against the
+   cap-only choice (deb8670)
+train B=8: A 3020.4 ms  B 2810.8 ms  B/A 0.931  (per-round B/A: 0.934 0.932 0.933 0.930 0.930 0.931 0.930 0.930 0.927 0.930)  losses 12.270327 12.270327
+infer B=8: A 805.1 ms  B 733.6 ms  B/A 0.911  (per-round B/A: 0.908 0.913 0.909 0.910 0.917 0.911 0.911 0.914 0.911 0.911 0.910 0.911)  losses 12.270327 12.270327
+gemm_search GS_BURST=1 (ms, sustained at the cap / burst after 40 ms idle):
+in_proj fwd   cap-only choice 1.165 / 0.934   algo 6 tile 24 stages 9: 1.203 / 0.824
+w12 fwd       cap-only choice 0.450 / 0.438   algo 6 tile 24 stages 9: 0.453 / 0.377
+head fwd      cap-only choice 1.772 / 1.494   algo 6 tile 24 stages 9: 1.785 / 1.259
+one-time tuning of the 370M model's shapes: first training step 56.6 s (normally ~2.7 s)
+
+== final build (ae30e57) vs hybrid-qwen35 (898aaf1)
+train B=8: A 3324.8 ms  B 2827.8 ms  B/A 0.851  (per-round B/A: 0.857 0.859 0.861 0.861 0.855 0.851 0.854 0.851 0.860 0.859 0.847 0.852)  losses 12.270264 12.270264
+infer B=8: A 797.3 ms  B 732.5 ms  B/A 0.919  (per-round B/A: 0.916 0.917 0.917 0.914 0.918 0.918 0.915 0.913 0.921 0.916 0.918 0.915)  losses 12.270264 12.270264
+tests: 65 passed. test_gradients_bf16_real_dimensions (median / 95% of carmt's error over the original's own bf16 error):
+hybrid-qwen35 bf16 scan 0.88 / 1.22, fp32 scan 0.86 / 1.17; final bf16 scan 0.88 / 1.29, fp32 scan 0.87 / 1.14,
+bf16 scan with TF32 on (k_post_bwd) 0.87 / 1.26.
