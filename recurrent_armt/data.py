@@ -269,10 +269,18 @@ class PretrainStream:
 
     # -- iteration
     def state_dict(self) -> dict:
-        return {"chunk": self.chunk, "emitted": self.emitted, "seed": self.seed, "rank": self.rank, "world_size": self.world}
+        return {"chunk": self.chunk, "emitted": self.emitted, "seed": self.seed, "rank": self.rank, "world_size": self.world,
+                **self._content()}
+
+    def _content(self) -> dict:
+        """What else fixes the windows of a chunk (a position means nothing in a stream built differently)."""
+        return {"mix": self.mix, "window": self.window, "cooldown": self.cooldown, "min_doc_tokens": self.min_doc_tokens}
 
     def load_state_dict(self, state: dict) -> None:
         assert (state["seed"], state["rank"], state["world_size"]) == (self.seed, self.rank, self.world), "different stream"
+        mine = self._content()
+        differ = {k: (state[k], mine[k]) for k in mine if k in state and state[k] != mine[k]}   # older states lack them
+        assert not differ, f"different stream (saved, this one): {differ}"
         self.chunk, self.emitted, self._next = state["chunk"], state["emitted"], None
 
     def __iter__(self):

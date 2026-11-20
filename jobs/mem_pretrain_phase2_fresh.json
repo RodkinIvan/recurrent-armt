@@ -1,0 +1,63 @@
+{
+ "project": "recurrent_armt",
+ "env": {
+  "file": "env.yml"
+ },
+ "sync": [
+  "jobs/data_states/mempretrain_step5000",
+  "recurrent_armt",
+  "scripts",
+  "tests",
+  "train.py"
+ ],
+ "exclude": [
+  "__pycache__",
+  "*.pyc"
+ ],
+ "fetch": [
+  "outputs/{name}/log.jsonl"
+ ],
+ "jobs": [
+  {
+   "name": "gdn2_370m_mempretrain_qkvb_5k_ft_fresh",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29606 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --batch_size 8 --grad_accum 2 --lr 1e-4 --warmup_steps 200 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix arxiv:1,omr:2 --eval_state_reset --max_steps 1000 --eval_every 250 --save_every 250 --init_from outputs/gdn2_370m_mempretrain_qkvb_step5000 --memory_lr_mult 1 --data_state_from jobs/data_states/mempretrain_step5000",
+   "gpus": 2,
+   "gb": 30,
+   "expect": [
+    "outputs/gdn2_370m_mempretrain_qkvb_5k_ft_fresh/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "gdn2_370m_mempretrain_nomem_5k_ft_fresh",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29607 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --batch_size 8 --grad_accum 2 --lr 1e-4 --warmup_steps 200 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix arxiv:1,omr:2 --eval_state_reset --max_steps 1000 --eval_every 250 --save_every 250 --num_mem_tokens 0 --init_from outputs/gdn2_370m_mempretrain_nomem_5k_ft_p1/final --data_state_from jobs/data_states/mempretrain_step5000",
+   "gpus": 2,
+   "gb": 30,
+   "expect": [
+    "outputs/gdn2_370m_mempretrain_nomem_5k_ft_fresh/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10"
+   ],
+   "retries": 2
+  },
+  {
+   "name": "gdn2_370m_mempretrain_nomem_ft_fresh",
+   "cmd": "export NCCL_P2P_DISABLE=1 PYTHONPATH=.; test -f checkpoints/gdn2-370m-30B/model.safetensors || {python} scripts/convert_gdn2.py --file checkpoint-6B-model-ckpt.pth --out checkpoints/gdn2-370m-30B; {python} -m torch.distributed.run --nproc_per_node 2 --master_port 29608 train.py --base_model checkpoints/gdn2-370m-30B --out_dir outputs/{name} --batch_size 8 --grad_accum 2 --lr 1e-4 --warmup_steps 200 --eval_windows 128 --eval_long_windows 64 --log_every 10 --wandb_project recurrent-armt --mix arxiv:1,omr:2 --eval_state_reset --max_steps 1000 --eval_every 250 --save_every 250 --num_mem_tokens 0 --data_state_from jobs/data_states/mempretrain_step5000",
+   "gpus": 2,
+   "gb": 30,
+   "expect": [
+    "outputs/gdn2_370m_mempretrain_nomem_ft_fresh/log.jsonl"
+   ],
+   "hosts": [
+    "mbz_nlp2.10",
+    "mbz_nlp2"
+   ],
+   "retries": 2
+  }
+ ]
+}

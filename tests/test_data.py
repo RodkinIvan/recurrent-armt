@@ -176,3 +176,11 @@ def test_peek_returns_the_first_windows_without_taking_them():
     head = s.peek(4)
     assert all(np.array_equal(x, y) for x, y in zip(head, ref[:4]))
     assert all(np.array_equal(x, y) for x, y in zip(take(s, 40), ref))          # the stream is unchanged
+
+
+def test_state_of_a_differently_built_stream_is_refused():
+    state = make().state_dict()
+    with pytest.raises(AssertionError, match="different stream"):
+        make(cooldown=13).load_state_dict(state)
+    old = {k: state[k] for k in ("chunk", "emitted", "seed", "rank", "world_size")}      # saved before the check existed
+    make(cooldown=13).load_state_dict(old)

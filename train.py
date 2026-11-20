@@ -36,6 +36,10 @@ def get_args():
     p.add_argument("--base_model", required=True, help="pretrained recurrent LM (fla RWKV-7 / HF Mamba / Mamba2 / Qwen3.5 hybrid ...)")
     p.add_argument("--tokenizer", default=None, help="default: the base model's")
     p.add_argument("--init_from", default=None, help="an ARMT checkpoint (save_pretrained dir) to start from")
+    p.add_argument("--data_state_from", default=None,
+                   help="a checkpoint dir (<run>/last) whose data state (data_rank{r}.json) the stream continues from: "
+                        "a phase 2 started with --init_from then trains on new windows, not on phase 1's again "
+                        "(same --seed, --mix, window and world size; a resume from --out_dir's own checkpoint wins)")
     p.add_argument("--segment_size", type=int, default=1024)
     p.add_argument("--n_segments", type=int, default=8)
     p.add_argument("--num_mem_tokens", type=int, default=32, help="0 = no memory (the plain recurrent model, a baseline)")
@@ -182,6 +186,9 @@ def main():
     stream = PretrainStream(tokenizer, window, sep, rank=rank, world_size=world, seed=a.seed,
                             mix=mix, cooldown=cooldown, min_doc_tokens=a.min_doc_tokens,
                             num_proc=a.num_proc)
+    if a.data_state_from:          # before anything reads the stream (the memory init's calibration peeks at it)
+        stream.load_state_dict(json.loads((Path(a.data_state_from) / f"data_rank{rank}.json").read_text()))
+        log(f"data: continuing the stream of {a.data_state_from} (chunk {stream.chunk}, {stream.emitted} windows into it)")
     val = {"val": validation_windows(tokenizer, window, sep, a.eval_windows, num_proc=a.num_proc)}
     if a.eval_long_windows:
         val["val_long"] = validation_windows(tokenizer, window, sep, a.eval_long_windows, long_docs=True, num_proc=a.num_proc)

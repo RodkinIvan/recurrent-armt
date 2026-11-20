@@ -1,0 +1,109 @@
+# 2026-11-21T01:14:05+04:00 on ws006600, NVIDIA RTX 5880 Ada Generation; code = local hybrid-qwen35 working tree (uncommitted --data_state_from + tests)
+============================= test session starts ==============================
+platform linux -- Python 3.11.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /tmp/armt_review
+plugins: platformdirs-4.14.5, anyio-4.16.0
+collected 28 items
+
+tests/test_train_script.py ..                                            [  7%]
+tests/test_data.py ...........                                           [ 46%]
+tests/test_lr_schedule.py ....                                           [ 60%]
+tests/test_memory_init.py ...........                                    [100%]
+
+==================================== PASSES ====================================
+_______________ test_stop_step_stops_early_on_the_full_schedule ________________
+---------------------------- Captured stderr setup -----------------------------
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 501.53it/s]
+----------------------------- Captured stdout call -----------------------------
+data: separator 0, cooldown 4 windows, validation windows val 4
+model: MambaForCausalLM 0.0M params (0.00M ARMT), window 16
+[memory step 0] read/hidden 0.00e+00 (max 0.00e+00), W_mv rms 0.00e+00
+[eval step 0] val 4.9379 per segment 4.868 5.018
+step 1 loss 2.6176 seg0 2.446 seg1 2.813 lr 5.0e-04/5.0e-04 gnorm 4.05 0.1k tok/s mem 0.0G
+step 2 loss 2.1553 seg0 1.964 seg1 2.374 lr 1.0e-03/1.0e-03 gnorm 4.00 1.2k tok/s mem 0.0G
+step 3 loss 1.7579 seg0 1.751 seg1 1.765 lr 1.0e-03/1.0e-03 gnorm 3.65 1.2k tok/s mem 0.0G
+step 4 loss 1.9867 seg0 2.274 seg1 1.658 lr 9.4e-04/9.4e-04 gnorm 2.97 1.2k tok/s mem 0.0G
+[memory step 4] read/hidden 4.89e-03 (max 4.99e-03), W_mv rms 1.91e-03
+[eval step 4] val 4.9392 per segment 4.865 5.024
+saved /tmp/pytest-of-ivan.rodkin/pytest-10/test_stop_step_stops_early_on_0/p1/last at step 4
+done
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/22 [00:00<?, ?it/s]Loading weights: 100%|██████████| 22/22 [00:00<00:00, 13142.67it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 783.84it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 951.74it/s]
+_________________ test_data_state_from_continues_phase_1s_data _________________
+---------------------------- Captured stderr setup -----------------------------
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1150.07it/s]
+----------------------------- Captured stdout call -----------------------------
+data: separator 0, cooldown 4 windows, validation windows val 4
+model: MambaForCausalLM 0.0M params (0.00M ARMT), window 16
+[memory step 0] read/hidden 0.00e+00 (max 0.00e+00), W_mv rms 0.00e+00
+[eval step 0] val 4.9379 per segment 4.868 5.018
+step 1 loss 2.6176 seg0 2.446 seg1 2.813 lr 5.0e-04/5.0e-04 gnorm 4.05 0.7k tok/s mem 0.0G
+step 2 loss 2.1553 seg0 1.964 seg1 2.374 lr 1.0e-03/1.0e-03 gnorm 4.00 1.3k tok/s mem 0.0G
+step 3 loss 1.7579 seg0 1.751 seg1 1.765 lr 1.0e-03/1.0e-03 gnorm 3.65 1.3k tok/s mem 0.0G
+[memory step 3] read/hidden 3.90e-03 (max 4.00e-03), W_mv rms 1.53e-03
+[eval step 3] val 4.9385 per segment 4.865 5.022
+saved /tmp/pytest-of-ivan.rodkin/pytest-10/test_data_state_from_continues0/p1/last at step 3
+done
+data: continuing the stream of /tmp/pytest-of-ivan.rodkin/pytest-10/test_data_state_from_continues0/p1/last (chunk 0, 6 windows into it)
+data: separator 0, cooldown 4 windows, validation windows val 4
+model: MambaForCausalLM 0.0M params (0.00M ARMT), window 16
+[memory step 0] read/hidden 2.78e-03 (max 2.84e-03), W_mv rms 1.53e-03
+[eval step 0] val 4.9372 per segment 4.949 4.923
+step 1 loss 1.9867 seg0 2.274 seg1 1.658 lr 5.0e-04/5.0e-04 gnorm 2.97 0.7k tok/s mem 0.0G
+step 2 loss 1.8525 seg0 1.840 seg1 1.867 lr 1.0e-03/1.0e-03 gnorm 3.92 1.3k tok/s mem 0.0G
+[memory step 2] read/hidden 3.51e-03 (max 3.63e-03), W_mv rms 1.94e-03
+[eval step 2] val 4.9395 per segment 4.950 4.927
+saved /tmp/pytest-of-ivan.rodkin/pytest-10/test_data_state_from_continues0/p2/last at step 2
+done
+data: separator 0, cooldown 4 windows, validation windows val 4
+model: MambaForCausalLM 0.0M params (0.00M ARMT), window 16
+[memory step 0] read/hidden 2.62e-03 (max 2.98e-03), W_mv rms 1.53e-03
+[eval step 0] val 4.9985 per segment 4.895 5.117
+step 1 loss 2.4455 seg0 2.278 seg1 2.637 lr 5.0e-04/5.0e-04 gnorm 3.50 0.7k tok/s mem 0.0G
+step 2 loss 2.0501 seg0 1.873 seg1 2.252 lr 1.0e-03/1.0e-03 gnorm 3.52 1.2k tok/s mem 0.0G
+[memory step 2] read/hidden 4.78e-03 (max 5.32e-03), W_mv rms 2.48e-03
+[eval step 2] val 5.0003 per segment 4.894 5.121
+saved /tmp/pytest-of-ivan.rodkin/pytest-10/test_data_state_from_continues0/p2_restart/last at step 2
+done
+----------------------------- Captured stderr call -----------------------------
+Loading weights:   0%|          | 0/22 [00:00<?, ?it/s]Loading weights: 100%|██████████| 22/22 [00:00<00:00, 15008.90it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 842.23it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1005.59it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 14399.92it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 947.01it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 717.10it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 15517.04it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 842.57it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1093.12it/s]
+=========================== short test summary info ============================
+PASSED tests/test_train_script.py::test_stop_step_stops_early_on_the_full_schedule
+PASSED tests/test_train_script.py::test_data_state_from_continues_phase_1s_data
+PASSED tests/test_data.py::test_pack
+PASSED tests/test_data.py::test_constrained_order_cooldown
+PASSED tests/test_data.py::test_stream_deterministic_and_cooldown_across_chunks
+PASSED tests/test_data.py::test_ranks_are_disjoint
+PASSED tests/test_data.py::test_resume_is_exact
+PASSED tests/test_data.py::test_fineweb_only_mix_is_the_fineweb_stream
+PASSED tests/test_data.py::test_mix_chunks_take_units_of_every_source
+PASSED tests/test_data.py::test_mix_min_doc_tokens_and_holdout
+PASSED tests/test_data.py::test_mix_ranks_disjoint_and_resume
+PASSED tests/test_data.py::test_peek_returns_the_first_windows_without_taking_them
+PASSED tests/test_data.py::test_state_of_a_differently_built_stream_is_refused
+PASSED tests/test_lr_schedule.py::test_frozen_group_is_zero_then_warms_up
+PASSED tests/test_lr_schedule.py::test_default_joins_the_decayed_run_schedule
+PASSED tests/test_lr_schedule.py::test_restart_reaches_full_lr_and_decays_to_the_floor
+PASSED tests/test_lr_schedule.py::test_restart_changes_nothing_for_a_group_trained_from_the_start
+PASSED tests/test_memory_init.py::test_last_conv_tap_multiplies_the_current_token
+PASSED tests/test_memory_init.py::test_slowest_head_is_the_smallest_A_log
+PASSED tests/test_memory_init.py::test_qk_init_copies_the_head_and_keeps_the_base_model
+PASSED tests/test_memory_init.py::test_qkvb_init_calibrates_gate_and_values
+PASSED tests/test_memory_init.py::test_wrong_sizes_and_backbones_are_rejected
+PASSED tests/test_memory_init.py::test_reduction_is_orthonormal_and_pca_keeps_the_most
+PASSED tests/test_memory_init.py::test_small_memory_projects_the_head[pca]
+PASSED tests/test_memory_init.py::test_small_memory_projects_the_head[random]
+PASSED tests/test_memory_init.py::test_small_memory_pca_needs_calibration_but_random_does_not
+PASSED tests/test_memory_init.py::test_small_memory_qkvb_runs
+PASSED tests/test_memory_init.py::test_small_memory_init_works_under_bf16_autocast
+============================== 28 passed in 6.71s ==============================

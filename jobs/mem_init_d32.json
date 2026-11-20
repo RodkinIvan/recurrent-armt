@@ -26,9 +26,7 @@
     "outputs/gdn2_370m_meminit_d32_random/log.jsonl"
    ],
    "hosts": [
-    "mbz_nlp2.10",
-    "mbz_nlp",
-    "mbz_nlp2"
+    "mbz_nlp"
    ],
    "retries": 2
   },
@@ -41,9 +39,7 @@
     "outputs/gdn2_370m_meminit_d32_gdn_qkvb_pca/log.jsonl"
    ],
    "hosts": [
-    "mbz_nlp2.10",
-    "mbz_nlp",
-    "mbz_nlp2"
+    "mbz_nlp"
    ],
    "retries": 2
   },
@@ -56,9 +52,7 @@
     "outputs/gdn2_370m_meminit_d32_gdn_qkvb_randproj/log.jsonl"
    ],
    "hosts": [
-    "mbz_nlp2.10",
-    "mbz_nlp",
-    "mbz_nlp2"
+    "mbz_nlp"
    ],
    "retries": 2
   }
