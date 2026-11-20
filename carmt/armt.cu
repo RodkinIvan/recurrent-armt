@@ -36,6 +36,8 @@
 #include <stdexcept>
 #include <map>
 #include <mutex>
+#include <algorithm>
+#include <functional>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -204,8 +206,16 @@ static void make_dims(Dims* d, const ArmtConfig* c) {
         }
     }
     d->n_params = P_GLOBAL + (long)d->L * L_COUNT;
+    // Every parameter's gradient starts 256-byte aligned: the weight-gradient GEMMs accumulate into it, and an output that
+    // is only 4-byte aligned (e.g. every other layer, behind the memory's single write-gate bias) limits cuBLAS to slow
+    // kernels. The groups that one GEMM writes as one matrix stay contiguous: [q .. g1], the three convs, [w1 | w2].
     long off = 0;
-    for (long i = 0; i < d->n_params; i++) { d->offset[i] = off; off += n[i]; }
+    for (long i = 0; i < d->n_params; i++) {
+        int j = i >= P_GLOBAL ? (int)((i - P_GLOBAL) % L_COUNT) : -1;
+        bool cont = (j > L_Q && j <= L_G1) || j == L_KC || j == L_VC || j == L_W2;
+        if (!cont) off = (off + 63) & ~63L;
+        d->offset[i] = off; off += n[i];
+    }
     d->total = off;
 }
 static inline int PI(int layer, int j) { return P_GLOBAL + layer * L_COUNT + j; }
@@ -348,16 +358,23 @@ static float* GPG(Ctx* c, int i0, int i1) {
 
 // =============================================================================================== GEMM (row-major)
 // C[M,N] (ldc) = alpha * op(A)[M,K] * op(B)[K,N] + beta * C ; op(X) = X^T if tX. Strided batched if batch > 1.
-// cuBLAS's default heuristic picks slow kernels for several of these shapes. The first time a shape (with its operand
-// alignment) is seen, mm times cuBLASLt's top candidates and the default cublasGemmEx on a scratch output and keeps the
-// fastest. The choice must not depend on timing noise (bf16 results differ slightly between algorithms, and DDP ranks /
-// repeated runs should compute the same thing), so it is made once per GPU model and cuBLAS version and persisted:
-// ARMT_GEMM_CACHE=<path prefix> (the Python side sets it next to the library) stores every choice in
-// <prefix>_<gpu>_<cublasLt version>.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
+// cuBLAS's default heuristic picks slow kernels for many of these shapes, and so do the top candidates of cuBLASLt's own
+// heuristic (by up to ~20% for the weight-gradient GEMMs). The first time a shape (with its operands' alignments) is
+// seen, mm times on a scratch output: the default cublasGemmEx; cuBLASLt's heuristic candidates, for the operands'
+// alignments and for 4-byte alignment (kernels the first query leaves out, which can still be the fastest); and, for the
+// large shapes, the fastest few of an exhaustive search over cuBLASLt's configurations (algorithm x tile x stages x CTA
+// swizzle x custom option, then split-k x reduction scheme for the best of those). The candidates are timed in rounds of
+// single calls, in a fresh random order every round (the GPU mostly runs at its power cap, and its clock drifts), and a
+// candidate's median counts. The choice must not depend on timing noise (bf16 results differ slightly between algorithms,
+// and DDP ranks / repeated runs should compute the same thing), so it is made once per GPU model and cuBLAS version and
+// persisted: ARMT_GEMM_CACHE=<path prefix> (the Python side sets it next to the library) stores every choice in
+// <prefix>_<gpu>_<cublasLt version>_t2.txt, written under a file lock, so concurrent processes (DDP ranks) and later runs
 // read the first process's choice instead of tuning again. Plans are shared by every context of the process.
-// ARMT_GEMM_TUNE=0: always cublasGemmEx. ARMT_GEMM_LOG=1: print each tuned shape's default and chosen time.
+// ARMT_GEMM_TUNE=0: always cublasGemmEx; 1: no exhaustive search; 2 (default): as above.
+// ARMT_GEMM_LOG=1: print each tuned shape's default and chosen time.
 #define LT_WS (32u << 20)
-#define LT_CAND 10
+#define LT_CAND 16
+#define LT_EXH_FLOP 2e10     // exhaustive search for GEMMs of at least this many flops (~0.1 ms)
 struct GemmPlan {
     int lt;                                   // 0: cublasGemmEx (default algorithm); 1: cublasLtMatmul with algo
     cublasLtMatmulDesc_t op = NULL;
@@ -376,7 +393,7 @@ static int ptr_align(const void* p) { uintptr_t a = (uintptr_t)p; int al = 16; w
 
 static void gemm_tune_init() {
     if (g_tune >= 0) return;
-    g_tune = env_int("ARMT_GEMM_TUNE", 1);
+    g_tune = env_int("ARMT_GEMM_TUNE", 2);
     g_tune_log = env_int("ARMT_GEMM_LOG", 0);
     const char* pre = getenv("ARMT_GEMM_CACHE");
     if (g_tune && pre && *pre) {
@@ -384,7 +401,7 @@ static void gemm_tune_init() {
         if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&pr, dev) == cudaSuccess) {
             std::string name = pr.name;
             for (char& ch : name) if (!isalnum((unsigned char)ch)) ch = '_';
-            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + ".txt";
+            g_cache_file = std::string(pre) + "_" + name + "_" + std::to_string((long)cublasLtGetVersion()) + "_t2.txt";
         }
     }
 }
@@ -445,73 +462,197 @@ static GemmPlan* plan_desc(cublasOperation_t oa, cublasOperation_t ob, int M, in
     return p;
 }
 
-// time cuBLASLt's candidates against cublasGemmEx for plan p's shape
-static GemmChoice tune_gemm(Ctx* c, GemmPlan* p, cublasOperation_t oa, cublasOperation_t ob, int M, int N, int K, float alpha,
-                            const void* A, cudaDataType ta, int lda, long long sA, const void* B, cudaDataType tb, int ldb,
-                            long long sB, float beta, cudaDataType tc, int ldc, long long sC, int batch,
-                            cublasComputeType_t ct, int al) {
-    GemmChoice ch;
-    ch.lt = 0; ch.ws = 0;
-    memset(&ch.algo, 0, sizeof(ch.algo));
+struct LtCand { cublasLtMatmulAlgo_t algo; size_t ws; };
+static void lt_add(std::vector<LtCand>& v, const cublasLtMatmulAlgo_t& a, size_t ws) {
+    for (auto& x : v) if (!memcmp(&x.algo, &a, sizeof(a))) return;
+    v.push_back({a, ws});
+}
+static uint64_t g_shuffle = 0x2545F4914F6CDD1Dull;
+static void shuffle(std::vector<int>& v) {   // deterministic (only the timing order depends on it)
+    for (int i = (int)v.size() - 1; i > 0; i--) {
+        g_shuffle = g_shuffle * 6364136223846793005ull + 1442695040888963407ull;
+        std::swap(v[i], v[(g_shuffle >> 33) % (uint64_t)(i + 1)]);
+    }
+}
+// cuBLASLt's heuristic candidates. aA, aB: alignments (bytes) of cuBLASLt's A and B (= our B and A), aC: of C / D
+static void lt_heuristic(Ctx* c, GemmPlan* p, uint32_t aA, uint32_t aB, uint32_t aC, std::vector<LtCand>& v) {
     cublasLtMatmulPreference_t pref;
     CB(cublasLtMatmulPreferenceCreate(&pref));
     uint64_t wsmax = LT_WS;
-    uint32_t a32 = (uint32_t)al;
     CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsmax, sizeof(wsmax)));
-    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES, &a32, sizeof(a32)));
-    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES, &a32, sizeof(a32)));
-    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES, &a32, sizeof(a32)));
-    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES, &a32, sizeof(a32)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES, &aA, sizeof(aA)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES, &aB, sizeof(aB)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES, &aC, sizeof(aC)));
+    CB(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES, &aC, sizeof(aC)));
     cublasLtMatmulHeuristicResult_t res[LT_CAND];
     int n = 0;
-    cublasStatus_t hs = cublasLtMatmulAlgoGetHeuristic(c->lt, p->op, p->la, p->lb, p->lc, p->lc, pref, LT_CAND, res, &n);
+    if (cublasLtMatmulAlgoGetHeuristic(c->lt, p->op, p->la, p->lb, p->lc, p->lc, pref, LT_CAND, res, &n) != CUBLAS_STATUS_SUCCESS) n = 0;
     cublasLtMatmulPreferenceDestroy(pref);
-    if (hs != CUBLAS_STATUS_SUCCESS || n == 0) return ch;
+    for (int i = 0; i < n; i++)
+        if (res[i].state == CUBLAS_STATUS_SUCCESS && res[i].workspaceSize <= LT_WS) lt_add(v, res[i].algo, res[i].workspaceSize);
+}
+// Exhaustive search: every configuration cuBLASLt accepts for the shape (algorithm x tile x stages x CTA swizzle x custom
+// option, without split-k), quick-timed (one call each, in random order, after an untimed call); then split-k x reduction
+// scheme for the `nbase` fastest. The `keep` fastest of each stage join v. tLA, tLB: types of cuBLASLt's A and B.
+static void lt_exhaustive(Ctx* c, GemmPlan* p, cublasComputeType_t ct, cudaDataType tLA, cudaDataType tLB, cudaDataType tc,
+                          uint32_t aA, uint32_t aB, uint32_t aC, const std::function<float(const LtCand&)>& quick,
+                          std::vector<LtCand>& v, int nbase, int keep) {
+    int ids[256], nids = 0;
+    if (cublasLtMatmulAlgoGetIds(c->lt, ct, CUDA_R_32F, tLA, tLB, tc, tc, 256, ids, &nids) != CUBLAS_STATUS_SUCCESS) return;
+    struct Cfg { LtCand k; int splitk; uint32_t redmask; float t; };
+    auto check = [&](cublasLtMatmulAlgo_t& a, size_t* ws) {
+        cublasLtMatmulHeuristicResult_t hr;
+        if (cublasLtMatmulAlgoCheck(c->lt, p->op, p->la, p->lb, p->lc, p->lc, &a, &hr) != CUBLAS_STATUS_SUCCESS) return false;
+        if (hr.state != CUBLAS_STATUS_SUCCESS || hr.workspaceSize > LT_WS) return false;
+        *ws = hr.workspaceSize;
+        return true;
+    };
+    auto cap = [](const cublasLtMatmulAlgo_t& a, cublasLtMatmulAlgoCapAttributes_t at) {   // the 4-byte capabilities
+        uint32_t x = 0;
+        size_t sz = 0;
+        cublasLtMatmulAlgoCapGetAttribute(&a, at, &x, sizeof(x), &sz);
+        return x;
+    };
+    auto ids_of = [](const cublasLtMatmulAlgo_t& a, cublasLtMatmulAlgoCapAttributes_t at, uint32_t undef) {
+        size_t sz = 0;
+        std::vector<uint32_t> r;
+        cublasLtMatmulAlgoCapGetAttribute(&a, at, NULL, 0, &sz);
+        r.resize(sz / 4);
+        if (sz) cublasLtMatmulAlgoCapGetAttribute(&a, at, r.data(), sz, &sz);
+        if (r.empty()) r.push_back(undef);
+        return r;
+    };
+    auto qpass = [&](std::vector<Cfg>& cs) {
+        std::vector<int> ord(cs.size());
+        for (size_t i = 0; i < ord.size(); i++) ord[i] = (int)i;
+        shuffle(ord);
+        for (int i : ord) cs[i].t = quick(cs[i].k);
+        std::stable_sort(cs.begin(), cs.end(), [](const Cfg& x, const Cfg& y) { return x.t < y.t; });
+    };
+    std::vector<Cfg> base, sk;
+    for (int ii = 0; ii < nids; ii++) {
+        cublasLtMatmulAlgo_t al;
+        if (cublasLtMatmulAlgoInit(c->lt, ct, CUDA_R_32F, tLA, tLB, tc, tc, ids[ii], &al) != CUBLAS_STATUS_SUCCESS) continue;
+        if (cap(al, CUBLASLT_ALGO_CAP_MIN_ALIGNMENT_A_BYTES) > aA || cap(al, CUBLASLT_ALGO_CAP_MIN_ALIGNMENT_B_BYTES) > aB ||
+            cap(al, CUBLASLT_ALGO_CAP_MIN_ALIGNMENT_C_BYTES) > aC || cap(al, CUBLASLT_ALGO_CAP_MIN_ALIGNMENT_D_BYTES) > aC) continue;
+        int splitk = (int)cap(al, CUBLASLT_ALGO_CAP_SPLITK_SUPPORT), custmax = (int)cap(al, CUBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX);
+        uint32_t redmask = cap(al, CUBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK), swzmax = cap(al, CUBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT);
+        for (uint32_t t : ids_of(al, CUBLASLT_ALGO_CAP_TILE_IDS, CUBLASLT_MATMUL_TILE_UNDEFINED))
+            for (uint32_t sg : ids_of(al, CUBLASLT_ALGO_CAP_STAGES_IDS, CUBLASLT_MATMUL_STAGES_UNDEFINED))
+                for (uint32_t cu = 0; (int)cu <= custmax; cu++)
+                    for (uint32_t sw = 0; sw <= swzmax; sw++) {
+                        cublasLtMatmulAlgo_t a = al;
+                        uint32_t one = 1, none = CUBLASLT_REDUCTION_SCHEME_NONE;
+                        cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_TILE_ID, &t, 4);
+                        cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_STAGES_ID, &sg, 4);
+                        cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION, &cu, 4);
+                        cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING, &sw, 4);
+                        cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &one, 4);
+                        cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &none, 4);
+                        size_t ws;
+                        if (check(a, &ws)) base.push_back({{a, ws}, splitk, redmask, 0.f});
+                    }
+    }
+    qpass(base);
+    for (int b = 0; b < (int)base.size() && b < nbase; b++) {
+        if (!base[b].splitk || base[b].t >= 1e29f) continue;
+        for (uint32_t k : {2u, 3u, 4u, 5u, 6u, 8u})
+            for (uint32_t red : {(uint32_t)CUBLASLT_REDUCTION_SCHEME_INPLACE, (uint32_t)CUBLASLT_REDUCTION_SCHEME_COMPUTE_TYPE,
+                                 (uint32_t)CUBLASLT_REDUCTION_SCHEME_OUTPUT_TYPE}) {
+                if (!(base[b].redmask & red)) continue;
+                cublasLtMatmulAlgo_t a = base[b].k.algo;
+                cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &k, 4);
+                cublasLtMatmulAlgoConfigSetAttribute(&a, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &red, 4);
+                size_t ws;
+                if (check(a, &ws)) sk.push_back({{a, ws}, 0, 0, 0.f});
+            }
+    }
+    qpass(sk);
+    for (auto* cs : {&base, &sk})
+        for (int i = 0; i < (int)cs->size() && i < keep; i++)
+            if ((*cs)[i].t < 1e29f) lt_add(v, (*cs)[i].k.algo, (*cs)[i].k.ws);
+}
 
+// time the candidates for plan p's shape (see the comment above mm); al*: the alignments (bytes) of A, B, C
+static GemmChoice tune_gemm(Ctx* c, GemmPlan* p, cublasOperation_t oa, cublasOperation_t ob, int M, int N, int K, float alpha,
+                            const void* A, cudaDataType ta, int lda, long long sA, const void* B, cudaDataType tb, int ldb,
+                            long long sB, float beta, cudaDataType tc, int ldc, long long sC, int batch,
+                            cublasComputeType_t ct, int alA, int alB, int alC) {
+    GemmChoice ch;
+    ch.lt = 0; ch.ws = 0;
+    memset(&ch.algo, 0, sizeof(ch.algo));
+    static bool told = false;
+    if (!told && g_tune >= 2) {
+        told = true;
+        fprintf(stderr, "carmt: timing cuBLAS GEMM algorithms for new shapes (once per GPU model and cuBLAS version%s%s)\n",
+                g_cache_file.empty() ? "" : "; cached in ", g_cache_file.c_str());
+    }
     size_t es = tc == CUDA_R_32F ? 4 : 2;
     size_t extent = ((size_t)(batch - 1) * sC + (size_t)(M - 1) * ldc + N) * es;
     void* Cs = ensure(&c->buf[B_TUNE], extent);       // the timing runs write here, never into C
     CK(cudaMemsetAsync(Cs, 0, extent, c->stream));
     void* ws = ensure(&c->buf[B_LTWS], LT_WS);
-    cudaEvent_t e0, e1;
-    CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
-    auto run = [&](int i) -> bool {
-        if (i < 0) {
+    auto run = [&](const LtCand* k) -> bool {         // k == NULL: cublasGemmEx's default
+        if (!k) {
             if (batch == 1)
                 return cublasGemmEx(c->blas, oa, ob, N, M, K, &alpha, B, tb, ldb, A, ta, lda, &beta, Cs, tc, ldc, ct,
                                     CUBLAS_GEMM_DEFAULT) == CUBLAS_STATUS_SUCCESS;
             return cublasGemmStridedBatchedEx(c->blas, oa, ob, N, M, K, &alpha, B, tb, ldb, sB, A, ta, lda, sA, &beta, Cs, tc,
                                               ldc, sC, batch, ct, CUBLAS_GEMM_DEFAULT) == CUBLAS_STATUS_SUCCESS;
         }
-        return cublasLtMatmul(c->lt, p->op, &alpha, B, p->la, A, p->lb, &beta, Cs, p->lc, Cs, p->lc, &res[i].algo, ws,
-                              res[i].workspaceSize, c->stream) == CUBLAS_STATUS_SUCCESS;
+        return cublasLtMatmul(c->lt, p->op, &alpha, B, p->la, A, p->lb, &beta, Cs, p->lc, Cs, p->lc, &k->algo, ws, k->ws,
+                              c->stream) == CUBLAS_STATUS_SUCCESS;
     };
-    auto timed = [&](int i) -> float {
-        if (!run(i)) return 1e30f;                     // warm-up; a candidate that fails to launch is skipped
+    cudaEvent_t e0, e1;
+    CK(cudaEventCreate(&e0)); CK(cudaEventCreate(&e1));
+    auto quick = [&](const LtCand& k) -> float {
+        if (!run(&k)) { cudaGetLastError(); return 1e30f; }
         CK(cudaEventRecord(e0, c->stream));
-        const int reps = 3;
-        for (int r = 0; r < reps; r++) run(i);
+        if (!run(&k)) { cudaGetLastError(); return 1e30f; }
         CK(cudaEventRecord(e1, c->stream));
         CK(cudaEventSynchronize(e1));
         float ms = 0.f;
         CK(cudaEventElapsedTime(&ms, e0, e1));
-        return ms / reps;
+        return ms;
     };
-    float t_def = timed(-1), t_best = t_def;
-    int best = -1;
-    for (int i = 0; i < n; i++) {
-        if (res[i].state != CUBLAS_STATUS_SUCCESS || res[i].workspaceSize > LT_WS) continue;
-        float t = timed(i);
-        if (t < t_best * 0.97f) { t_best = t; best = i; }   // keep the default unless a candidate is clearly faster
+    // candidates (cuBLASLt's A / B are our B / A)
+    std::vector<LtCand> v;
+    uint32_t aLA = (uint32_t)alB, aLB = (uint32_t)alA, aC = (uint32_t)alC;
+    lt_heuristic(c, p, aLA, aLB, aC, v);
+    if (aLA > 4 || aLB > 4 || aC > 4) lt_heuristic(c, p, aLA < 4 ? aLA : 4, aLB < 4 ? aLB : 4, aC < 4 ? aC : 4, v);
+    double flop = 2.0 * M * N * K * batch;
+    if (g_tune >= 2 && flop >= LT_EXH_FLOP) lt_exhaustive(c, p, ct, tb, ta, tc, aLA, aLB, aC, quick, v, 6, 6);
+    // careful pass: index 0 = the default, i = v[i - 1]
+    int nc = (int)v.size() + 1;
+    std::vector<cudaEvent_t> eb(nc), ee(nc);
+    for (int i = 0; i < nc; i++) { CK(cudaEventCreate(&eb[i])); CK(cudaEventCreate(&ee[i])); }
+    std::vector<int> ord;
+    for (int i = 0; i < nc; i++)
+        if (run(i ? &v[i - 1] : NULL)) ord.push_back(i);   // untimed first call (module loading); failures drop out
+    cudaGetLastError();
+    for (int w = 0; w < 4; w++) run(NULL);                  // the clock settles
+    std::vector<std::vector<float>> tt(nc);
+    const int rounds = 11;
+    for (int r = 0; r < rounds; r++) {
+        shuffle(ord);
+        for (int i : ord) { CK(cudaEventRecord(eb[i], c->stream)); run(i ? &v[i - 1] : NULL); CK(cudaEventRecord(ee[i], c->stream)); }
+        CK(cudaStreamSynchronize(c->stream));
+        for (int i : ord) { float ms = 0.f; CK(cudaEventElapsedTime(&ms, eb[i], ee[i])); tt[i].push_back(ms); }
     }
     cudaGetLastError();
+    std::vector<float> med(nc, 1e30f);
+    for (int i : ord) { std::sort(tt[i].begin(), tt[i].end()); med[i] = tt[i][tt[i].size() / 2]; }
+    int best = 0;
+    for (int i : ord)
+        if (i && med[i] < med[best] * (best ? 1.f : 0.99f)) best = i;   // keep the default unless a candidate is faster by 1%
+    for (int i = 0; i < nc; i++) { cudaEventDestroy(eb[i]); cudaEventDestroy(ee[i]); }
     CK(cudaEventDestroy(e0)); CK(cudaEventDestroy(e1));
     buf_free(&c->buf[B_TUNE]);
-    if (best >= 0) { ch.lt = 1; ch.algo = res[best].algo; ch.ws = res[best].workspaceSize; }
+    if (best > 0) { ch.lt = 1; ch.algo = v[best - 1].algo; ch.ws = v[best - 1].ws; }
     if (g_tune_log)
-        fprintf(stderr, "armt gemm %c%c M=%d N=%d K=%d batch=%d in=%d/%d out=%d beta=%g: default %.4f ms, chosen %.4f ms (%s)\n",
+        fprintf(stderr, "armt gemm %c%c M=%d N=%d K=%d batch=%d in=%d/%d out=%d beta=%g align=%d/%d/%d: %d candidates; default %.4f ms, chosen %.4f ms (%s)\n",
                 oa == CUBLAS_OP_T ? 'T' : 'N', ob == CUBLAS_OP_T ? 'T' : 'N', M, N, K, batch, (int)ta, (int)tb, (int)tc,
-                beta, t_def, t_best, best < 0 ? "default" : "lt");
+                beta, alA, alB, alC, nc, med[0], med[best], best ? "lt" : "default");
     return ch;
 }
 
@@ -526,12 +667,10 @@ static void mm(Ctx* c, int tA, int tB, int M, int N, int K, float alpha,
     cublasOperation_t oa = tB ? CUBLAS_OP_T : CUBLAS_OP_N, ob = tA ? CUBLAS_OP_T : CUBLAS_OP_N;
     // broadcast operands (stride 0) stay on cublasGemmEx
     if (g_tune && !c->notune && (batch == 1 || (sA && sB && sC))) {
-        int al = ptr_align(A);
-        if (ptr_align(B) < al) al = ptr_align(B);
-        if (ptr_align(C) < al) al = ptr_align(C);
+        int alA = ptr_align(A), alB = ptr_align(B), alC = ptr_align(C);
         char kb[256];
-        snprintf(kb, sizeof(kb), "%d%d %d %d %d %d %d %d %lld %lld %lld %d %d %d %d %d %d %d", tA, tB, M, N, K, lda, ldb, ldc, sA, sB, sC,
-                 batch, (int)ta, (int)tb, (int)tc, (int)ct, al, beta != 0.f);
+        snprintf(kb, sizeof(kb), "%d%d %d %d %d %d %d %d %lld %lld %lld %d %d %d %d %d %d/%d/%d %d", tA, tB, M, N, K, lda, ldb, ldc, sA, sB,
+                 sC, batch, (int)ta, (int)tb, (int)tc, (int)ct, alA, alB, alC, beta != 0.f);
         std::string key(kb);
         GemmPlan* pl;
         {
@@ -550,7 +689,7 @@ static void mm(Ctx* c, int tA, int tB, int M, int N, int K, float alpha,
                 if (d != g_disk.end()) ch = d->second;
                 else {
                     GemmChoice mine = tune_gemm(c, pl, oa, ob, M, N, K, alpha, A, ta, lda, sA, B, tb, ldb, sB, beta, tc, ldc,
-                                                sC, batch, ct, al);
+                                                sC, batch, ct, alA, alB, alC);
                     if (fd >= 0) { flock(fd, LOCK_EX); disk_read(fd); }
                     d = g_disk.find(key);
                     if (d != g_disk.end()) ch = d->second;   // another process tuned it meanwhile: its (first) entry wins
@@ -1755,6 +1894,27 @@ static __device__ __forceinline__ void tc_load_chunk(bf16* dst, const bf16* src,
         *(uint4*)(dst + r * (KD + 8) + c8 * 8) = v;
     }
 }
+// register prefetch of a [CH][KD] bf16 chunk (NL uint4 per thread), and its store into smem (row stride KD+8, optionally
+// negated): the state passes load chunk n+1 while computing chunk n
+template <int KD> static __device__ __forceinline__ void tc_ld_regs(uint4* r, const bf16* src) {
+    constexpr int R8 = KD / 8, NL = CH * R8 / 256;
+#pragma unroll
+    for (int i = 0; i < NL; i++) { int e = threadIdx.x + 256 * i; r[i] = ((const uint4*)(src + (long)(e / R8) * KD))[e % R8]; }
+}
+template <int KD> static __device__ __forceinline__ void tc_st_regs(bf16* dst, const uint4* r, bool neg) {
+    constexpr int R8 = KD / 8, NL = CH * R8 / 256;
+#pragma unroll
+    for (int i = 0; i < NL; i++) {
+        int e = threadIdx.x + 256 * i;
+        uint4 v = r[i];
+        if (neg) {
+            __nv_bfloat162* h = (__nv_bfloat162*)&v;
+#pragma unroll
+            for (int j = 0; j < 4; j++) h[j] = __hneg2(h[j]);
+        }
+        *(uint4*)(dst + (e / R8) * (KD + 8) + (e % R8) * 8) = v;
+    }
+}
 template <int KD>
 __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u, const bf16* __restrict__ Wm, const bf16* __restrict__ Kt,
                                                       const float* __restrict__ gl, bf16* __restrict__ S0, bf16* __restrict__ S0lo,
@@ -1768,6 +1928,14 @@ __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u
     const long bh = blockIdx.y;
     const int v0 = blockIdx.x * TVS, tid = threadIdx.x, warp = tid >> 5;
     for (int e = tid; e < KD * TVS; e += 256) { int k = e / TVS, vv = e % TVS; sS[e] = S_in ? S_in[bh * KD * VD + (long)k * VD + v0 + vv] : 0.f; }
+    constexpr int NL = CH * (KD / 8) / 256, NU = CH * TVS / 256;
+    uint4 rW[NL], rK[NL];   // the chunk's Wm, Kt and u, loaded one chunk ahead
+    bf16 ru[NU];
+    auto ld_u = [&](long cb_) {
+#pragma unroll
+        for (int j = 0; j < NU; j++) { int e = tid + 256 * j, c = e / TVS, vv = e % TVS; ru[j] = u[cb_ * CH * VD + (long)c * VD + v0 + vv]; }
+    };
+    if (nch > 0) { tc_ld_regs<KD>(rW, Wm + bh * nch * CH * KD); tc_ld_regs<KD>(rK, Kt + bh * nch * CH * KD); ld_u(bh * nch); }
     __syncthreads();
     for (int n = 0; n < nch; n++) {
         long cb = bh * nch + n;
@@ -1783,7 +1951,8 @@ __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u
             S0lo[cb * KD * VD + (long)k * VD + v0 + vv] = xl;
 #endif
         }
-        tc_load_chunk<KD>(sWK, Wm + cb * CH * KD, true);
+        tc_st_regs<KD>(sWK, rW, true);
+        if (n + 1 < nch) tc_ld_regs<KD>(rW, Wm + (cb + 1) * CH * KD);
         __syncthreads();
         {   // vn = u - Wm S: the product into a fragment (one tile per warp), stored over sSb once every warp is done with it
             int m = warp / (TVS / 16), nn = warp % (TVS / 16);
@@ -1805,14 +1974,17 @@ __global__ void __launch_bounds__(256, 2) k_state_fwd(const bf16* __restrict__ u
             wmma::store_matrix_sync(sV + 16 * m * TVS + 16 * nn, acc, TVS, wmma::mem_row_major);
         }
         __syncthreads();
-        for (int e = tid; e < CH * TVS; e += 256) {
-            int c = e / TVS, vv = e % TVS;
-            bf16 x = __float2bfloat16(sV[e] + __bfloat162float(u[cb * CH * VD + (long)c * VD + v0 + vv]));
+#pragma unroll
+        for (int j = 0; j < NU; j++) {
+            int e = tid + 256 * j, c = e / TVS, vv = e % TVS;
+            bf16 x = __float2bfloat16(sV[e] + __bfloat162float(ru[j]));
             sVb[c * TC_LDV + vv] = x;
             vn[cb * CH * VD + (long)c * VD + v0 + vv] = x;
         }
+        if (n + 1 < nch) ld_u(cb + 1);
         for (int e = tid; e < KD * TVS; e += 256) sS[e] *= EXPF(gl[cb * KD + (e / TVS)]);
-        tc_load_chunk<KD>(sWK, Kt + cb * CH * KD, false);
+        tc_st_regs<KD>(sWK, rK, false);
+        if (n + 1 < nch) tc_ld_regs<KD>(rK, Kt + (cb + 1) * CH * KD);
         __syncthreads();
         // S += Kt^T vn : (KD/16) x 2 tiles
         for (int tile = warp; tile < (KD / 16) * (TVS / 16); tile += 8) {

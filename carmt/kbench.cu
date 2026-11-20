@@ -8,6 +8,7 @@
 // (layer output, carried states, input grads, parameter grads) are written for comparing builds (kbench_cmp.py).
 #include "armt.cu"
 #include <chrono>
+#include <functional>
 
 static uint64_t rng_state = 0x9E3779B97F4A7C15ull;
 static float frand() {   // uniform [-1, 1)
@@ -137,6 +138,71 @@ int main(int argc, char** argv) {
             }
         }
 #endif
+        if (getenv("KBENCH_GEMMS")) {   // each GEMM of the scan's backward on its own (the buffers of the last step)
+            const int KD = 128;
+            long CSK = s.nchB * CH * KD, CSC = s.nchB * CH * CH;
+            int nb = (int)s.nchB;
+            long long sK = CH * KD, sC = CH * CH, sS = (long long)KD * KD;
+            floatS *Qg = BF(c, B_QG, floatS, CSK), *vn = BF(c, B_VN, floatS, CSK), *Mm = BF(c, B_MMAT, floatS, CSC), *S0 = BF(c, B_S0, floatS, s.nchB * KD * KD);
+            floatS *AmX = BF(c, B_AMX, floatS, CSC), *cwv = BF(c, B_CWV, floatS, CSK), *y = BF(c, B_Y, floatS, CSK);
+            float* Am = BF(c, B_AM, float, CSC);
+            floatS *dO = BF(c, B_DO, floatS, CSK), *dSe = BF(c, B_DSE, floatS, s.nchB * KD * KD), *dvn = BF(c, B_DVN, floatS, CSK);
+            floatS *pre_dvn = BF(c, B_PREDVN, floatS, CSK), *dWm = BF(c, B_DWM, floatS, CSK), *dQg = BF(c, B_DQG, floatS, CSK);
+            floatS *dKt = BF(c, B_DKT, floatS, CSK), *dy = BF(c, B_DY, floatS, CSK), *dwv = BF(c, B_DWV, floatS, CSK);
+            float *dM = BF(c, B_DMMAT, float, CSC), *dA = BF(c, B_DAM, float, CSC), *T1 = BF(c, B_T1, float, CSC), *dL = BF(c, B_DL, float, CSC);
+            auto timeit = [&](const char* nm, std::function<void()> f) {
+                cudaEvent_t a0, a1; CK(cudaEventCreate(&a0)); CK(cudaEventCreate(&a1));
+                f(); CK(cudaEventRecord(a0, st));
+                for (int r = 0; r < 20; r++) f();
+                CK(cudaEventRecord(a1, st)); CK(cudaEventSynchronize(a1));
+                float ms; CK(cudaEventElapsedTime(&ms, a0, a1)); printf("gemm %-26s %.3f ms\n", nm, ms / 20);
+            };
+#define SC CUDA_S
+            timeit("pre_dvn = M^T do", [&] { mm(c, 1, 0, CH, KD, CH, 1.f, Mm, SC, CH, sC, dO, SC, KD, sK, 0.f, pre_dvn, SC, KD, sK, nb); });
+            timeit("pre_dS = Qg^T do", [&] { mm(c, 1, 0, KD, KD, CH, 1.f, Qg, SC, KD, sK, dO, SC, KD, sK, 0.f, dSe, SC, KD, sS, nb); });
+            timeit("dQg = do S0^T", [&] { mm(c, 0, 1, CH, KD, KD, 1.f, dO, SC, KD, sK, S0, SC, KD, sS, 0.f, dQg, SC, KD, sK, nb); });
+            timeit("dKt = vn dSe^T", [&] { mm(c, 0, 1, CH, KD, KD, 1.f, vn, SC, KD, sK, dSe, SC, KD, sS, 0.f, dKt, SC, KD, sK, nb); });
+            timeit("dWm = -dvn S0^T", [&] { mm(c, 0, 1, CH, KD, KD, -1.f, dvn, SC, KD, sK, S0, SC, KD, sS, 0.f, dWm, SC, KD, sK, nb); });
+            timeit("dM = do vn^T (f32)", [&] { mm(c, 0, 1, CH, CH, KD, 1.f, dO, SC, KD, sK, vn, SC, KD, sK, 0.f, dM, F32, CH, sC, nb); });
+            timeit("dwv = A^T du", [&] { mm(c, 1, 0, CH, KD, CH, 1.f, AmX, SC, CH, sC, dvn, SC, KD, sK, 0.f, dwv, SC, KD, sK, nb); });
+            timeit("dy = A^T dWm", [&] { mm(c, 1, 0, CH, KD, CH, 1.f, AmX, SC, CH, sC, dWm, SC, KD, sK, 0.f, dy, SC, KD, sK, nb); });
+            timeit("dA = du wv^T (f32)", [&] { mm(c, 0, 1, CH, CH, KD, 1.f, dvn, SC, KD, sK, cwv, SC, KD, sK, 0.f, dA, F32, CH, sC, nb); });
+            timeit("dA += dWm y^T (f32)", [&] { mm(c, 0, 1, CH, CH, KD, 1.f, dWm, SC, KD, sK, y, SC, KD, sK, 1.f, dA, F32, CH, sC, nb); });
+            timeit("T1 = dA A^T (f32 x f32)", [&] { mm(c, 0, 1, CH, CH, CH, 1.f, dA, F32, CH, sC, Am, F32, CH, sC, 0.f, T1, F32, CH, sC, nb); });
+            timeit("dL = -A^T T1 (f32 x f32)", [&] { mm(c, 1, 0, CH, CH, CH, -1.f, Am, F32, CH, sC, T1, F32, CH, sC, 0.f, dL, F32, CH, sC, nb); });
+            timeit("o = Qg S0 (fwd)", [&] { mm(c, 0, 0, CH, KD, KD, 1.f, Qg, SC, KD, sK, S0, SC, KD, sS, 0.f, dQg, SC, KD, sK, nb); });
+            timeit("o += M vn (fwd)", [&] { mm(c, 0, 0, CH, KD, CH, 1.f, Mm, SC, CH, sC, vn, SC, KD, sK, 1.f, dQg, SC, KD, sK, nb); });
+            timeit("u = A wv (fwd)", [&] { mm(c, 0, 0, CH, KD, CH, 1.f, AmX, SC, CH, sC, cwv, SC, KD, sK, 0.f, dwv, SC, KD, sK, nb); });
+#undef SC
+            // the layer's large linears (bf16, fp32 accumulation): TFLOPS
+            int D = d.D, NP = d.NP, F = d.F, Nn = s.N;
+            floatX *h1 = BF(c, B_H1, floatX, (long)Nn * D), *P = BF(c, B_P, floatX, (long)Nn * NP), *dP = BF(c, B_DP, floatX, (long)Nn * NP);
+            floatX *dh1 = BF(c, B_DH1, floatX, (long)Nn * D), *a2 = BF(c, B_A, floatX, (long)Nn * 2 * F), *da = BF(c, B_DA, floatX, (long)Nn * 2 * F);
+            floatX *h2 = BF(c, B_H2, floatX, (long)Nn * D);
+            float* gW = grad + d.offset[PI(0, L_Q)];
+            float* gW12 = grad + d.offset[PI(0, L_W1)];
+            auto tf = [&](const char* nm, double flop, std::function<void()> f) {
+                cudaEvent_t a0, a1; CK(cudaEventCreate(&a0)); CK(cudaEventCreate(&a1));
+                f(); CK(cudaEventRecord(a0, st));
+                for (int r = 0; r < 10; r++) f();
+                CK(cudaEventRecord(a1, st)); CK(cudaEventSynchronize(a1));
+                float ms; CK(cudaEventElapsedTime(&ms, a0, a1)); ms /= 10;
+                printf("linear %-34s %.3f ms  %6.1f TFLOPS\n", nm, ms, flop / ms / 1e9);
+            };
+            double fP = 2.0 * Nn * NP * D, f12 = 2.0 * Nn * 2 * F * D;
+            tf("P = h1 W_in^T (fwd)", fP, [&] { lin(c, P, NP, h1, D, c->w_in[0], Nn, NP, D, 0.f); });
+            tf("dh1 = dP W_in (bwd dx)", fP, [&] { lin_dx(c, dh1, D, dP, NP, c->w_in[0], Nn, NP, D, 0.f); });
+            tf("dW_in += dP^T h1 (bwd dW, fp32 acc)", fP, [&] { lin_dw(c, gW, dP, NP, h1, D, Nn, NP, D); });
+            tf("a = h2 W12^T (MLP fwd)", f12, [&] { lin(c, a2, 2 * F, h2, D, c->w_12[0], Nn, 2 * F, D, 0.f); });
+            tf("dh2 = da W12 (MLP dx)", f12, [&] { lin_dx(c, dh1, D, da, 2 * F, c->w_12[0], Nn, 2 * F, D, 0.f); });
+            tf("dW12 += da^T h2 (MLP dW)", f12, [&] { lin_dw(c, gW12, da, 2 * F, h2, D, Nn, 2 * F, D); });
+            // the same with the gradient 4-byte aligned (an odd float offset), as for every other layer when a layer's
+            // parameter count is odd
+            tf("dW_in, grad at an odd offset", fP, [&] { lin_dw(c, gW + 1, dP, NP, h1, D, Nn, NP, D); });
+            tf("dW12, grad at an odd offset", f12, [&] { lin_dw(c, gW12 + 1, da, 2 * F, h2, D, Nn, 2 * F, D); });
+            tf("dW_o, grad aligned", 2.0 * Nn * D * d.VDt, [&] { lin_dw(c, grad + d.offset[PI(0, L_O)], BF(c, B_DXX, floatX, (long)Nn * D), D, BF(c, B_ON, floatX, (long)Nn * d.VDt), d.VDt, Nn, D, d.VDt); });
+            tf("dW_o, grad at an odd offset", 2.0 * Nn * D * d.VDt, [&] { lin_dw(c, grad + d.offset[PI(0, L_O)] + 1, BF(c, B_DXX, floatX, (long)Nn * D), D, BF(c, B_ON, floatX, (long)Nn * d.VDt), d.VDt, Nn, D, d.VDt); });
+        }
         // timing: whole forward and recompute+backward with the profiler, then without it (wall clock of the stream)
 #ifndef KBENCH_NO_PROF   // (-DKBENCH_NO_PROF for library versions without the phase profiler)
         c->prof = new Prof();

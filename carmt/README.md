@@ -72,14 +72,28 @@ out = model(input_ids=x, return_state=True)    # ARMTState, interchangeable with
 
 After a change none of these can see (e.g. a raw NCCL write into the parameters), call `carmt.mark_weights_changed()`.
 
-**GEMM kernels.** On first use of each matmul shape the library times cuBLASLt's candidates against cuBLAS's default and keeps
-the fastest. The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>.txt` under a file lock, so DDP ranks
+**GEMM kernels.** On first use of each matmul shape the library times candidates and keeps the fastest:
+- cuBLAS's default;
+- cuBLASLt's heuristic candidates, for the operands' alignments and for 4-byte alignment (kernels the first query leaves
+  out can still be the fastest);
+- for shapes of at least 2·10¹⁰ flops, the fastest few of an exhaustive search over cuBLASLt's configurations (algorithm
+  × tile × stages × swizzle × custom option, then split-k for the best few).
+
+The candidates run in rounds of single calls, in a random order each round, and the median counts: the GPU mostly runs
+at its power cap, where the clock drifts. Short best-of-N timings picked kernels up to 20% slower than the best for the
+weight-gradient GEMMs. The search takes about 25 s for the 370M model's shapes, once; it prints one line when it starts.
+
+The choices are written to `carmt/.gemm_cache_<gpu>_<cublas version>_t2.txt` under a file lock, so DDP ranks
 and later runs read them instead of tuning again, and so compute with the same kernels. When two processes tune the same
 shape at once, the first one written wins and both use it. The lock is never held while the GPU works.
 - The choices are kept for good. Shapes first seen in a backward are timed while other work (e.g. DDP's all-reduce)
   may share the GPU. Delete the cache file to re-tune.
 - `ARMT_GEMM_CACHE=<path prefix>` moves the file; `ARMT_GEMM_CACHE=` keeps the choices in-process only.
-- `ARMT_GEMM_TUNE=0` uses cuBLAS's defaults; `ARMT_GEMM_LOG=1` prints each shape's default and chosen time.
+- `ARMT_GEMM_TUNE=0` uses cuBLAS's defaults, `ARMT_GEMM_TUNE=1` skips the exhaustive search; `ARMT_GEMM_LOG=1` prints
+  each shape's default and chosen time.
+- Every parameter's gradient slot in the flat gradient buffer starts 256-byte aligned (`armt_param_offset`): with a
+  4-byte-aligned output (every other layer, behind the memory's one-element write-gate bias) cuBLAS can only use its
+  slower 4-byte kernels for the weight gradients.
 - The memory's fp32 matmuls read the framework's parameter tensors, whose alignment depends on the framework (DeepSpeed's
   flat buffers), so they always use cuBLAS's default: tuned choices never differ between, e.g., a DDP and a ZeRO run.
 
