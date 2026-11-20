@@ -570,6 +570,34 @@ def test_fused_scan_backward_matches_gemm_path_real_dimensions():
     assert q(.5) <= 1.05 and q(.9) <= 1.15, (q(.5), q(.9))
 
 
+def test_stale_library_is_refused(tmp_path, monkeypatch):
+    """a library built from another armt.cu than the one next to it (or before the check existed) is refused with the
+    rebuild command; CARMT_ALLOW_STALE_LIB=1 accepts it"""
+    import ctypes
+    import shutil
+    import carmt
+    carmt._lib("bf16")                                     # the current build passes (built first if missing)
+    lib_path = carmt.library_path("bf16")
+    copy = tmp_path / "libarmt_bf16.so"
+    shutil.copy(lib_path, copy)
+    src = open(os.path.join(os.path.dirname(lib_path), "armt.cu")).read()
+    (tmp_path / "armt.cu").write_text(src + "\n// edited after the build\n")
+    lib = ctypes.CDLL(str(copy))
+    with pytest.raises(RuntimeError, match="make -C .* -B"):
+        carmt._check_source(lib, str(copy))
+
+    class Old:                                             # a library built before armt_source_hash existed
+        pass
+    with pytest.raises(RuntimeError, match="predates the source check"):
+        carmt._check_source(Old(), str(copy))
+    monkeypatch.setenv("CARMT_ALLOW_STALE_LIB", "1")
+    with pytest.warns(UserWarning, match="used anyway"):
+        carmt._check_source(lib, str(copy))
+    (tmp_path / "armt.cu").write_text(src)                 # the same source: accepted
+    monkeypatch.delenv("CARMT_ALLOW_STALE_LIB")
+    carmt._check_source(lib, str(copy))
+
+
 def test_training_steps_do_not_repack_weights():
     """the packed weights survive a backward: micro-steps without an optimizer step do not re-pack (or re-allocate)"""
     import carmt
